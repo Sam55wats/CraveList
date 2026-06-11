@@ -2,10 +2,10 @@ from django.db import models
 
 class Restaurant(models.Model):
     name = models.CharField(max_length=255)
-    cuisine = models.CharField(max_length=255)
-    price_level = models.IntegerField()
-    city = models.CharField(max_length=255)
-    vibe = models.CharField(max_length=255)
+    cuisine = models.CharField(max_length=255, blank=True)
+    price_level = models.PositiveSmallIntegerField(null=True, blank=True)
+    city = models.CharField(max_length=255, blank=True)
+    vibe = models.CharField(max_length=255, blank=True)
     notes = models.TextField(blank=True)
     visited = models.BooleanField(default=False)
     rating = models.PositiveSmallIntegerField(null=True, blank=True)
