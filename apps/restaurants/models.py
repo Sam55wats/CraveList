@@ -1,3 +1,17 @@
 from django.db import models
 
-# Create your models here.
+class Restaurant(models.Model):
+    name = models.CharField(max_length=255)
+    cuisine = models.CharField(max_length=255)
+    price_level = models.IntegerField()
+    city = models.CharField(max_length=255)
+    vibe = models.CharField(max_length=255)
+    notes = models.TextField(blank=True)
+    visited = models.BooleanField(default=False)
+    rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    visited_notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return self.name
