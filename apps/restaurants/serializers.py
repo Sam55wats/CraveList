@@ -1,5 +1,12 @@
+from decimal import Decimal
+
+from django.contrib.auth import get_user_model
 from rest_framework import serializers
-from .models import Restaurant
+
+from .models import Follow, Restaurant, UserRestaurant
+
+
+User = get_user_model()
 
 
 class RestaurantSerializer(serializers.ModelSerializer):
@@ -12,9 +19,36 @@ class RestaurantSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Price level must be between 1 and 4.")
         return value
 
+
+class UserRestaurantSerializer(serializers.ModelSerializer):
+    restaurant = RestaurantSerializer(read_only=True)
+    restaurant_id = serializers.PrimaryKeyRelatedField(
+        queryset=Restaurant.objects.all(),
+        source="restaurant",
+        write_only=True,
+    )
+    user = serializers.StringRelatedField(read_only=True)
+
+    class Meta:
+        model = UserRestaurant
+        fields = (
+            "id",
+            "user",
+            "restaurant",
+            "restaurant_id",
+            "bookmarked",
+            "visited",
+            "rating",
+            "notes",
+            "visited_at",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("created_at", "updated_at")
+
     def validate_rating(self, value):
-        if value is not None and not 1 <= value <= 5:
-            raise serializers.ValidationError("Rating must be between 1 and 5.")
+        if value is not None and not Decimal("1.0") <= value <= Decimal("10.0"):
+            raise serializers.ValidationError("Rating must be between 1.0 and 10.0.")
         return value
 
     def validate(self, data):
@@ -27,3 +61,30 @@ class RestaurantSerializer(serializers.ModelSerializer):
             )
 
         return data
+
+
+class FollowSerializer(serializers.ModelSerializer):
+    follower = serializers.StringRelatedField(read_only=True)
+    following = serializers.StringRelatedField(read_only=True)
+    following_id = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.all(),
+        source="following",
+        write_only=True,
+    )
+
+    class Meta:
+        model = Follow
+        fields = (
+            "id",
+            "follower",
+            "following",
+            "following_id",
+            "created_at",
+        )
+        read_only_fields = ("created_at",)
+
+    def validate_following_id(self, value):
+        request = self.context.get("request")
+        if request and request.user == value:
+            raise serializers.ValidationError("You cannot follow yourself.")
+        return value
