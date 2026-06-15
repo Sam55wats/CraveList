@@ -1,9 +1,33 @@
+from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase
 
-from .models import Restaurant
+from .models import Follow, Restaurant, UserRestaurant
 
 
-class RestaurantSerializerValidationTests(APITestCase):
+User = get_user_model()
+
+
+class RestaurantAPITests(APITestCase):
+    def test_can_create_restaurant_facts(self):
+        response = self.client.post(
+            "/api/restaurants/",
+            {
+                "name": "Taco Bamba",
+                "address": "7777 Baltimore Ave",
+                "cuisine": "Mexican",
+                "price_level": 2,
+                "city": "College Park",
+                "state": "MD",
+                "external_place_id": "places_123",
+                "external_source": "google",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Restaurant.objects.count(), 1)
+        self.assertEqual(Restaurant.objects.first().name, "Taco Bamba")
+
     def test_price_level_must_be_between_one_and_four(self):
         response = self.client.post(
             "/api/restaurants/",
@@ -17,13 +41,94 @@ class RestaurantSerializerValidationTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("price_level", response.data)
 
-    def test_rating_must_be_between_one_and_five(self):
+    def test_can_search_restaurants_by_name(self):
+        Restaurant.objects.create(name="Taco Bamba", cuisine="Mexican")
+        Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
+
+        response = self.client.get("/api/restaurants/?search=taco")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+
+    def test_can_filter_restaurants_by_cuisine_city_and_price(self):
+        Restaurant.objects.create(
+            name="Taco Bamba",
+            cuisine="Mexican",
+            city="College Park",
+            price_level=2,
+        )
+        Restaurant.objects.create(
+            name="Fancy Tacos",
+            cuisine="Mexican",
+            city="Washington",
+            price_level=4,
+        )
+
+        response = self.client.get(
+            "/api/restaurants/?cuisine=mexican&city=college%20park&price_level=2"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+
+
+class UserRestaurantAPITests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="samuel", password="password")
+        self.other_user = User.objects.create_user(username="other", password="password")
+        self.restaurant = Restaurant.objects.create(
+            name="Taco Bamba",
+            cuisine="Mexican",
+            city="College Park",
+            price_level=2,
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_can_bookmark_restaurant_for_current_user(self):
         response = self.client.post(
-            "/api/restaurants/",
+            "/api/my-restaurants/",
             {
-                "name": "Impossible Rating",
+                "restaurant_id": self.restaurant.id,
+                "bookmarked": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(UserRestaurant.objects.count(), 1)
+        entry = UserRestaurant.objects.first()
+        self.assertEqual(entry.user, self.user)
+        self.assertEqual(entry.restaurant, self.restaurant)
+        self.assertTrue(entry.bookmarked)
+
+    def test_can_rate_visited_restaurant_with_decimal_score(self):
+        entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            visited=True,
+        )
+
+        response = self.client.patch(
+            f"/api/my-restaurants/{entry.id}/",
+            {
+                "rating": "9.2",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        entry.refresh_from_db()
+        self.assertEqual(str(entry.rating), "9.2")
+
+    def test_rating_must_be_between_one_and_ten(self):
+        response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
                 "visited": True,
-                "rating": 6,
+                "rating": "10.1",
             },
             format="json",
         )
@@ -33,11 +138,11 @@ class RestaurantSerializerValidationTests(APITestCase):
 
     def test_rating_requires_visited_true(self):
         response = self.client.post(
-            "/api/restaurants/",
+            "/api/my-restaurants/",
             {
-                "name": "Not Yet Visited",
+                "restaurant_id": self.restaurant.id,
                 "visited": False,
-                "rating": 4,
+                "rating": "9.2",
             },
             format="json",
         )
@@ -45,129 +150,81 @@ class RestaurantSerializerValidationTests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("rating", response.data)
 
-    def test_valid_visited_rating_can_be_saved(self):
+    def test_user_only_sees_their_own_restaurant_entries(self):
+        UserRestaurant.objects.create(user=self.user, restaurant=self.restaurant)
+        other_restaurant = Restaurant.objects.create(name="Other Place")
+        UserRestaurant.objects.create(user=self.other_user, restaurant=other_restaurant)
+
+        response = self.client.get("/api/my-restaurants/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["restaurant"]["name"], "Taco Bamba")
+
+    def test_can_filter_user_restaurants_by_visited_and_cuisine(self):
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            visited=True,
+            rating="9.2",
+        )
+        sushi = Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
+        UserRestaurant.objects.create(user=self.user, restaurant=sushi, visited=False)
+
+        response = self.client.get("/api/my-restaurants/?visited=true&cuisine=mexican")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["restaurant"]["name"], "Taco Bamba")
+
+    def test_authentication_is_required_for_user_restaurants(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get("/api/my-restaurants/")
+
+        self.assertEqual(response.status_code, 403)
+
+
+class FollowAPITests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="samuel", password="password")
+        self.friend = User.objects.create_user(username="friend", password="password")
+        self.client.force_authenticate(user=self.user)
+
+    def test_can_follow_another_user(self):
         response = self.client.post(
-            "/api/restaurants/",
+            "/api/follows/",
             {
-                "name": "Good Dinner",
-                "price_level": 3,
-                "visited": True,
-                "rating": 5,
+                "following_id": self.friend.id,
             },
             format="json",
         )
 
         self.assertEqual(response.status_code, 201)
-        self.assertTrue(Restaurant.objects.filter(name="Good Dinner").exists())
+        self.assertEqual(Follow.objects.count(), 1)
+        follow = Follow.objects.first()
+        self.assertEqual(follow.follower, self.user)
+        self.assertEqual(follow.following, self.friend)
 
-
-class RestaurantAPICRUDTests(APITestCase):
-    def test_can_create_restaurant(self):
+    def test_user_cannot_follow_themself(self):
         response = self.client.post(
-            "/api/restaurants/",
+            "/api/follows/",
             {
-                "name": "Taco Bamba",
-                "cuisine": "Mexican",
-                "price_level": 2,
-                "city": "College Park",
+                "following_id": self.user.id,
             },
             format="json",
         )
 
-        self.assertEqual(response.status_code, 201)
-        self.assertEqual(Restaurant.objects.count(), 1)
-        self.assertEqual(Restaurant.objects.first().name, "Taco Bamba")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("following_id", response.data)
 
-    def test_can_list_restaurants(self):
-        Restaurant.objects.create(name="Taco Bamba")
-        Restaurant.objects.create(name="Sushi Spot")
+    def test_user_only_sees_people_they_follow(self):
+        Follow.objects.create(follower=self.user, following=self.friend)
+        other_user = User.objects.create_user(username="other", password="password")
+        Follow.objects.create(follower=self.friend, following=other_user)
 
-        response = self.client.get("/api/restaurants/")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 2)
-
-    def test_can_retrieve_restaurant(self):
-        restaurant = Restaurant.objects.create(name="Taco Bamba")
-
-        response = self.client.get(f"/api/restaurants/{restaurant.id}/")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data["name"], "Taco Bamba")
-
-    def test_can_update_restaurant(self):
-        restaurant = Restaurant.objects.create(name="Taco Bamba", visited=False)
-
-        response = self.client.patch(
-            f"/api/restaurants/{restaurant.id}/",
-            {
-                "visited": True,
-                "rating": 5,
-            },
-            format="json",
-        )
-
-        self.assertEqual(response.status_code, 200)
-        restaurant.refresh_from_db()
-        self.assertTrue(restaurant.visited)
-        self.assertEqual(restaurant.rating, 5)
-
-    def test_can_delete_restaurant(self):
-        restaurant = Restaurant.objects.create(name="Taco Bamba")
-
-        response = self.client.delete(f"/api/restaurants/{restaurant.id}/")
-
-        self.assertEqual(response.status_code, 204)
-        self.assertEqual(Restaurant.objects.count(), 0)
-
-    def test_restaurants_are_ordered_newest_first(self):
-        first = Restaurant.objects.create(name="First")
-        second = Restaurant.objects.create(name="Second")
-
-        response = self.client.get("/api/restaurants/")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.data[0]["id"], second.id)
-        self.assertEqual(response.data[1]["id"], first.id)
-
-
-class RestaurantAPIFilterTests(APITestCase):
-    def test_can_filter_by_visited(self):
-        Restaurant.objects.create(name="Visited", visited=True)
-        Restaurant.objects.create(name="Not Visited", visited=False)
-
-        response = self.client.get("/api/restaurants/?visited=false")
+        response = self.client.get("/api/follows/")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Not Visited")
-
-    def test_can_filter_by_cuisine_case_insensitively(self):
-        Restaurant.objects.create(name="Taco Bamba", cuisine="Mexican")
-        Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
-
-        response = self.client.get("/api/restaurants/?cuisine=mexican")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Taco Bamba")
-
-    def test_can_filter_by_city_case_insensitively(self):
-        Restaurant.objects.create(name="Taco Bamba", city="College Park")
-        Restaurant.objects.create(name="DC Noodles", city="Washington")
-
-        response = self.client.get("/api/restaurants/?city=college%20park")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Taco Bamba")
-
-    def test_can_filter_by_price_level(self):
-        Restaurant.objects.create(name="Cheap Eats", price_level=1)
-        Restaurant.objects.create(name="Date Night", price_level=3)
-
-        response = self.client.get("/api/restaurants/?price_level=3")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Date Night")
+        self.assertEqual(response.data[0]["following"], "friend")
