@@ -51,6 +51,39 @@ class RestaurantAPITests(APITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["name"], "Taco Bamba")
 
+    def test_can_search_restaurants_across_core_fields(self):
+        Restaurant.objects.create(
+            name="Northwest Chinese",
+            address="7313 Baltimore Ave",
+            cuisine="Chinese",
+            city="College Park",
+            state="MD",
+            country="USA",
+        )
+        Restaurant.objects.create(
+            name="Taco Bamba",
+            address="7777 Baltimore Ave",
+            cuisine="Mexican",
+            city="College Park",
+            state="MD",
+            country="USA",
+        )
+
+        cuisine_response = self.client.get("/api/restaurants/?q=chinese")
+        city_response = self.client.get("/api/restaurants/?q=college")
+        address_response = self.client.get("/api/restaurants/?q=7313")
+
+        self.assertEqual(cuisine_response.status_code, 200)
+        self.assertEqual(len(cuisine_response.data), 1)
+        self.assertEqual(cuisine_response.data[0]["name"], "Northwest Chinese")
+
+        self.assertEqual(city_response.status_code, 200)
+        self.assertEqual(len(city_response.data), 2)
+
+        self.assertEqual(address_response.status_code, 200)
+        self.assertEqual(len(address_response.data), 1)
+        self.assertEqual(address_response.data[0]["name"], "Northwest Chinese")
+
     def test_can_filter_restaurants_by_cuisine_city_and_price(self):
         Restaurant.objects.create(
             name="Taco Bamba",
@@ -68,6 +101,42 @@ class RestaurantAPITests(APITestCase):
         response = self.client.get(
             "/api/restaurants/?cuisine=mexican&city=college%20park&price_level=2"
         )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+
+    def test_can_filter_restaurants_by_state_country_and_external_source(self):
+        Restaurant.objects.create(
+            name="Taco Bamba",
+            city="College Park",
+            state="MD",
+            country="USA",
+            external_source="google",
+            external_place_id="google-123",
+        )
+        Restaurant.objects.create(
+            name="Toronto Tacos",
+            city="Toronto",
+            state="ON",
+            country="Canada",
+            external_source="foursquare",
+            external_place_id="fsq-123",
+        )
+
+        response = self.client.get(
+            "/api/restaurants/?state=md&country=usa&external_source=google"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+
+    def test_cuisine_filter_allows_partial_matches(self):
+        Restaurant.objects.create(name="Taco Bamba", cuisine="Mexican")
+        Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
+
+        response = self.client.get("/api/restaurants/?cuisine=mex")
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
