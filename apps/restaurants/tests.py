@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.core.management import call_command
 from rest_framework.test import APITestCase
 
 from .models import Follow, Restaurant, UserRestaurant
@@ -50,6 +51,25 @@ class RestaurantAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["name"], "Taco Bamba")
+
+
+class SeedRestaurantsCommandTests(APITestCase):
+    def test_seed_restaurants_loads_development_restaurants(self):
+        call_command("seed_restaurants")
+
+        self.assertEqual(Restaurant.objects.count(), 40)
+        self.assertTrue(
+            Restaurant.objects.filter(
+                external_source="seed",
+                external_place_id="seed-college-park-taco-bamba",
+            ).exists()
+        )
+
+    def test_seed_restaurants_is_idempotent(self):
+        call_command("seed_restaurants")
+        call_command("seed_restaurants")
+
+        self.assertEqual(Restaurant.objects.count(), 40)
 
     def test_can_search_restaurants_across_core_fields(self):
         Restaurant.objects.create(
