@@ -52,26 +52,7 @@ class RestaurantAPITests(APITestCase):
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["name"], "Taco Bamba")
 
-
-class SeedRestaurantsCommandTests(APITestCase):
-    def test_seed_restaurants_loads_development_restaurants(self):
-        call_command("seed_restaurants")
-
-        self.assertEqual(Restaurant.objects.count(), 40)
-        self.assertTrue(
-            Restaurant.objects.filter(
-                external_source="seed",
-                external_place_id="seed-college-park-taco-bamba",
-            ).exists()
-        )
-
-    def test_seed_restaurants_is_idempotent(self):
-        call_command("seed_restaurants")
-        call_command("seed_restaurants")
-
-        self.assertEqual(Restaurant.objects.count(), 40)
-
-    def test_can_search_restaurants_across_core_fields(self):
+    def test_can_search_restaurants_across_restaurant_fields(self):
         Restaurant.objects.create(
             name="Northwest Chinese",
             address="7313 Baltimore Ave",
@@ -90,19 +71,37 @@ class SeedRestaurantsCommandTests(APITestCase):
         )
 
         cuisine_response = self.client.get("/api/restaurants/?q=chinese")
-        city_response = self.client.get("/api/restaurants/?q=college")
         address_response = self.client.get("/api/restaurants/?q=7313")
 
         self.assertEqual(cuisine_response.status_code, 200)
         self.assertEqual(len(cuisine_response.data), 1)
         self.assertEqual(cuisine_response.data[0]["name"], "Northwest Chinese")
 
-        self.assertEqual(city_response.status_code, 200)
-        self.assertEqual(len(city_response.data), 2)
-
         self.assertEqual(address_response.status_code, 200)
         self.assertEqual(len(address_response.data), 1)
         self.assertEqual(address_response.data[0]["name"], "Northwest Chinese")
+
+    def test_location_parameter_searches_location_fields(self):
+        Restaurant.objects.create(
+            name="Northwest Chinese",
+            cuisine="Chinese",
+            city="College Park",
+            state="MD",
+            country="USA",
+        )
+        Restaurant.objects.create(
+            name="Toronto Tacos",
+            cuisine="Mexican",
+            city="Toronto",
+            state="ON",
+            country="Canada",
+        )
+
+        response = self.client.get("/api/restaurants/search/?location=college")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Northwest Chinese")
 
     def test_can_filter_restaurants_by_cuisine_city_and_price(self):
         Restaurant.objects.create(
@@ -125,6 +124,112 @@ class SeedRestaurantsCommandTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["name"], "Taco Bamba")
+
+    def test_search_endpoint_can_search_restaurants(self):
+        Restaurant.objects.create(
+            name="Northwest Chinese",
+            cuisine="Chinese",
+            city="College Park",
+            price_level=2,
+        )
+        Restaurant.objects.create(
+            name="Sushi Spot",
+            cuisine="Japanese",
+            city="College Park",
+            price_level=3,
+        )
+
+        response = self.client.get("/api/restaurants/search/?q=chinese")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Northwest Chinese")
+
+    def test_search_endpoint_supports_combined_filters(self):
+        Restaurant.objects.create(
+            name="Taco Bamba",
+            cuisine="Mexican",
+            city="College Park",
+            price_level=2,
+        )
+        Restaurant.objects.create(
+            name="Fancy Tacos",
+            cuisine="Mexican",
+            city="Washington",
+            price_level=4,
+        )
+
+        response = self.client.get(
+            "/api/restaurants/search/?q=taco&location=college&price_level=2"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+
+    def test_location_suggestions_returns_matching_locations(self):
+        Restaurant.objects.create(
+            name="Taco Bamba",
+            cuisine="Mexican",
+            city="College Park",
+            state="MD",
+            country="USA",
+        )
+        Restaurant.objects.create(
+            name="Northwest Chinese",
+            cuisine="Chinese",
+            city="College Park",
+            state="MD",
+            country="USA",
+        )
+        Restaurant.objects.create(
+            name="Columbia Cafe",
+            cuisine="Cafe",
+            city="Columbia",
+            state="MD",
+            country="USA",
+        )
+        Restaurant.objects.create(
+            name="Toronto Tacos",
+            cuisine="Mexican",
+            city="Toronto",
+            state="ON",
+            country="Canada",
+        )
+
+        response = self.client.get("/api/restaurants/location-suggestions/?q=col")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.data,
+            [
+                {
+                    "label": "College Park, MD, USA",
+                    "city": "College Park",
+                    "state": "MD",
+                    "country": "USA",
+                },
+                {
+                    "label": "Columbia, MD, USA",
+                    "city": "Columbia",
+                    "state": "MD",
+                    "country": "USA",
+                },
+            ],
+        )
+
+    def test_location_suggestions_requires_a_query(self):
+        Restaurant.objects.create(
+            name="Taco Bamba",
+            city="College Park",
+            state="MD",
+            country="USA",
+        )
+
+        response = self.client.get("/api/restaurants/location-suggestions/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data, [])
 
     def test_can_filter_restaurants_by_state_country_and_external_source(self):
         Restaurant.objects.create(
@@ -161,6 +266,25 @@ class SeedRestaurantsCommandTests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(len(response.data), 1)
         self.assertEqual(response.data[0]["name"], "Taco Bamba")
+
+
+class SeedRestaurantsCommandTests(APITestCase):
+    def test_seed_restaurants_loads_development_restaurants(self):
+        call_command("seed_restaurants")
+
+        self.assertEqual(Restaurant.objects.count(), 40)
+        self.assertTrue(
+            Restaurant.objects.filter(
+                external_source="seed",
+                external_place_id="seed-college-park-taco-bamba",
+            ).exists()
+        )
+
+    def test_seed_restaurants_is_idempotent(self):
+        call_command("seed_restaurants")
+        call_command("seed_restaurants")
+
+        self.assertEqual(Restaurant.objects.count(), 40)
 
 
 class UserRestaurantAPITests(APITestCase):
