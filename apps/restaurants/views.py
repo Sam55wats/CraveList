@@ -1,10 +1,11 @@
-from django.db.models import Q
 from rest_framework import permissions, viewsets
-from rest_framework.decorators import api_view
+from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
-from .models import Follow, Restaurant, UserRestaurant
+from .models import Follow, UserRestaurant
 from .serializers import FollowSerializer, RestaurantSerializer, UserRestaurantSerializer
+from .services.locations import suggest_locations
+from .services.search import search_restaurants
 
 
 @api_view(["GET"])
@@ -16,50 +17,18 @@ class RestaurantViewSet(viewsets.ModelViewSet):
     serializer_class = RestaurantSerializer
 
     def get_queryset(self):
-        queryset = Restaurant.objects.all()
-        query_params = self.request.query_params
+        return search_restaurants(self.request.query_params)
 
-        search = query_params.get("search") or query_params.get("q")
-        cuisine = query_params.get("cuisine")
-        address = query_params.get("address")
-        city = query_params.get("city")
-        state = query_params.get("state")
-        country = query_params.get("country")
-        price_level = query_params.get("price_level")
-        external_source = query_params.get("external_source")
+    @action(detail=False, methods=["get"], url_path="search")
+    def search(self, request):
+        queryset = search_restaurants(request.query_params)
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
 
-        if search:
-            queryset = queryset.filter(
-                Q(name__icontains=search)
-                | Q(cuisine__icontains=search)
-                | Q(address__icontains=search)
-                | Q(city__icontains=search)
-                | Q(state__icontains=search)
-                | Q(country__icontains=search)
-            )
-
-        if cuisine:
-            queryset = queryset.filter(cuisine__icontains=cuisine)
-
-        if address:
-            queryset = queryset.filter(address__icontains=address)
-
-        if city:
-            queryset = queryset.filter(city__iexact=city)
-
-        if state:
-            queryset = queryset.filter(state__iexact=state)
-
-        if country:
-            queryset = queryset.filter(country__iexact=country)
-
-        if price_level:
-            queryset = queryset.filter(price_level=price_level)
-
-        if external_source:
-            queryset = queryset.filter(external_source__iexact=external_source)
-
-        return queryset
+    @action(detail=False, methods=["get"], url_path="location-suggestions")
+    def location_suggestions(self, request):
+        suggestions = suggest_locations(request.query_params.get("q"))
+        return Response(suggestions)
 
 
 class UserRestaurantViewSet(viewsets.ModelViewSet):
