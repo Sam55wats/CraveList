@@ -1,8 +1,9 @@
-from rest_framework import permissions, viewsets
+from rest_framework import filters, permissions, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
 from .models import Follow, UserRestaurant
+from .pagination import RestaurantPagination
 from .serializers import FollowSerializer, RestaurantSerializer, UserRestaurantSerializer
 from .services.locations import suggest_locations
 from .services.search import search_restaurants
@@ -13,15 +14,33 @@ def health_check(request):
     return Response({"status": "ok"})
 
 
-class RestaurantViewSet(viewsets.ModelViewSet):
+class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = RestaurantSerializer
+    pagination_class = RestaurantPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = [
+        "name",
+        "cuisine",
+        "price_level",
+        "city",
+        "state",
+        "created_at",
+        "updated_at",
+    ]
+    ordering = ["name"]
 
     def get_queryset(self):
         return search_restaurants(self.request.query_params)
 
     @action(detail=False, methods=["get"], url_path="search")
     def search(self, request):
-        queryset = search_restaurants(request.query_params)
+        queryset = self.filter_queryset(search_restaurants(request.query_params))
+        page = self.paginate_queryset(queryset)
+
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
         serializer = self.get_serializer(queryset, many=True)
         return Response(serializer.data)
 
