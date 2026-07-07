@@ -3,44 +3,46 @@ from django.core.management import call_command
 from rest_framework.test import APITestCase
 
 from .models import Follow, Restaurant, UserRestaurant
+from .serializers import RestaurantSerializer
 
 
 User = get_user_model()
 
 
 class RestaurantAPITests(APITestCase):
-    def test_can_create_restaurant_facts(self):
+    def test_restaurant_api_is_read_only(self):
+        restaurant = Restaurant.objects.create(name="Taco Bamba")
+
         response = self.client.post(
             "/api/restaurants/",
             {
-                "name": "Taco Bamba",
-                "address": "7777 Baltimore Ave",
-                "cuisine": "Mexican",
-                "price_level": 2,
-                "city": "College Park",
-                "state": "MD",
-                "external_place_id": "places_123",
-                "external_source": "google",
+                "name": "User-Created Restaurant",
             },
             format="json",
         )
+        update_response = self.client.patch(
+            f"/api/restaurants/{restaurant.id}/",
+            {"name": "Changed Name"},
+            format="json",
+        )
+        delete_response = self.client.delete(f"/api/restaurants/{restaurant.id}/")
 
-        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(update_response.status_code, 405)
+        self.assertEqual(delete_response.status_code, 405)
         self.assertEqual(Restaurant.objects.count(), 1)
         self.assertEqual(Restaurant.objects.first().name, "Taco Bamba")
 
     def test_price_level_must_be_between_one_and_four(self):
-        response = self.client.post(
-            "/api/restaurants/",
-            {
+        serializer = RestaurantSerializer(
+            data={
                 "name": "Too Fancy",
                 "price_level": 5,
-            },
-            format="json",
+            }
         )
 
-        self.assertEqual(response.status_code, 400)
-        self.assertIn("price_level", response.data)
+        self.assertFalse(serializer.is_valid())
+        self.assertIn("price_level", serializer.errors)
 
     def test_can_search_restaurants_by_name(self):
         Restaurant.objects.create(name="Taco Bamba", cuisine="Mexican")
@@ -49,8 +51,8 @@ class RestaurantAPITests(APITestCase):
         response = self.client.get("/api/restaurants/?search=taco")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
 
     def test_can_search_restaurants_across_restaurant_fields(self):
         Restaurant.objects.create(
@@ -74,12 +76,16 @@ class RestaurantAPITests(APITestCase):
         address_response = self.client.get("/api/restaurants/?q=7313")
 
         self.assertEqual(cuisine_response.status_code, 200)
-        self.assertEqual(len(cuisine_response.data), 1)
-        self.assertEqual(cuisine_response.data[0]["name"], "Northwest Chinese")
+        self.assertEqual(cuisine_response.data["count"], 1)
+        self.assertEqual(
+            cuisine_response.data["results"][0]["name"], "Northwest Chinese"
+        )
 
         self.assertEqual(address_response.status_code, 200)
-        self.assertEqual(len(address_response.data), 1)
-        self.assertEqual(address_response.data[0]["name"], "Northwest Chinese")
+        self.assertEqual(address_response.data["count"], 1)
+        self.assertEqual(
+            address_response.data["results"][0]["name"], "Northwest Chinese"
+        )
 
     def test_location_parameter_searches_location_fields(self):
         Restaurant.objects.create(
@@ -100,8 +106,8 @@ class RestaurantAPITests(APITestCase):
         response = self.client.get("/api/restaurants/search/?location=college")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Northwest Chinese")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Northwest Chinese")
 
     def test_can_filter_restaurants_by_cuisine_city_and_price(self):
         Restaurant.objects.create(
@@ -122,8 +128,8 @@ class RestaurantAPITests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
 
     def test_search_endpoint_can_search_restaurants(self):
         Restaurant.objects.create(
@@ -142,8 +148,8 @@ class RestaurantAPITests(APITestCase):
         response = self.client.get("/api/restaurants/search/?q=chinese")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Northwest Chinese")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Northwest Chinese")
 
     def test_search_endpoint_supports_combined_filters(self):
         Restaurant.objects.create(
@@ -164,8 +170,8 @@ class RestaurantAPITests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
 
     def test_location_suggestions_returns_matching_locations(self):
         Restaurant.objects.create(
@@ -254,8 +260,8 @@ class RestaurantAPITests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
 
     def test_cuisine_filter_allows_partial_matches(self):
         Restaurant.objects.create(name="Taco Bamba", cuisine="Mexican")
@@ -264,8 +270,62 @@ class RestaurantAPITests(APITestCase):
         response = self.client.get("/api/restaurants/?cuisine=mex")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["name"], "Taco Bamba")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
+
+    def test_restaurant_list_is_paginated(self):
+        Restaurant.objects.bulk_create(
+            [Restaurant(name=f"Restaurant {number:02d}") for number in range(25)]
+        )
+
+        response = self.client.get("/api/restaurants/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 25)
+        self.assertEqual(len(response.data["results"]), 20)
+        self.assertIsNotNone(response.data["next"])
+        self.assertIsNone(response.data["previous"])
+
+    def test_restaurant_list_accepts_page_size_with_a_safe_maximum(self):
+        Restaurant.objects.bulk_create(
+            [Restaurant(name=f"Restaurant {number:03d}") for number in range(105)]
+        )
+
+        response = self.client.get("/api/restaurants/?page_size=500")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 105)
+        self.assertEqual(len(response.data["results"]), 100)
+
+    def test_restaurants_can_be_ordered_by_allowed_fields(self):
+        Restaurant.objects.create(name="Alpha Cafe", price_level=1)
+        Restaurant.objects.create(name="Charlie Kitchen", price_level=3)
+        Restaurant.objects.create(name="Bravo Bistro", price_level=2)
+
+        response = self.client.get("/api/restaurants/?ordering=-price_level")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [restaurant["name"] for restaurant in response.data["results"]],
+            ["Charlie Kitchen", "Bravo Bistro", "Alpha Cafe"],
+        )
+
+    def test_search_endpoint_applies_pagination_and_ordering(self):
+        Restaurant.objects.bulk_create(
+            [
+                Restaurant(name=f"Taco Place {number:02d}", cuisine="Mexican")
+                for number in range(25)
+            ]
+        )
+
+        response = self.client.get(
+            "/api/restaurants/search/?q=taco&page_size=5&ordering=-name"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 25)
+        self.assertEqual(len(response.data["results"]), 5)
+        self.assertEqual(response.data["results"][0]["name"], "Taco Place 24")
 
 
 class SeedRestaurantsCommandTests(APITestCase):
