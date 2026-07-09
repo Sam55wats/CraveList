@@ -376,6 +376,73 @@ class UserRestaurantAPITests(APITestCase):
         self.assertEqual(entry.restaurant, self.restaurant)
         self.assertTrue(entry.bookmarked)
 
+    def test_saving_same_restaurant_twice_returns_existing_entry(self):
+        first_response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
+            },
+            format="json",
+        )
+        second_response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(first_response.status_code, 201)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(UserRestaurant.objects.count(), 1)
+        self.assertEqual(first_response.data["id"], second_response.data["id"])
+        self.assertTrue(second_response.data["bookmarked"])
+
+    def test_saving_existing_unbookmarked_restaurant_rebookmarks_it(self):
+        entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            bookmarked=False,
+        )
+
+        response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        entry.refresh_from_db()
+        self.assertTrue(entry.bookmarked)
+
+    def test_saving_existing_restaurant_can_update_visit_and_rating(self):
+        entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            bookmarked=True,
+        )
+
+        response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
+                "visited": True,
+                "rating": "8.7",
+                "notes": "Great tacos.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(UserRestaurant.objects.count(), 1)
+        entry.refresh_from_db()
+        self.assertTrue(entry.visited)
+        self.assertEqual(str(entry.rating), "8.7")
+        self.assertEqual(entry.notes, "Great tacos.")
+        self.assertFalse(entry.bookmarked)
+
     def test_can_rate_visited_restaurant_with_decimal_score(self):
         entry = UserRestaurant.objects.create(
             user=self.user,
@@ -422,6 +489,74 @@ class UserRestaurantAPITests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("rating", response.data)
+
+    def test_visited_restaurant_requires_rating(self):
+        response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
+                "visited": True,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("rating", response.data)
+
+    def test_visited_restaurant_is_automatically_unbookmarked(self):
+        response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
+                "bookmarked": True,
+                "visited": True,
+                "rating": "9.2",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        entry = UserRestaurant.objects.get()
+        self.assertTrue(entry.visited)
+        self.assertEqual(str(entry.rating), "9.2")
+        self.assertFalse(entry.bookmarked)
+
+    def test_can_unbookmark_without_removing_visit_history(self):
+        entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            bookmarked=True,
+            visited=True,
+            rating="9.2",
+        )
+
+        response = self.client.patch(
+            f"/api/my-restaurants/{entry.id}/",
+            {
+                "bookmarked": False,
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        entry.refresh_from_db()
+        self.assertFalse(entry.bookmarked)
+        self.assertTrue(entry.visited)
+        self.assertEqual(str(entry.rating), "9.2")
+
+    def test_can_delete_user_restaurant_without_deleting_restaurant(self):
+        entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            visited=True,
+            rating="9.2",
+        )
+
+        response = self.client.delete(f"/api/my-restaurants/{entry.id}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(UserRestaurant.objects.count(), 0)
+        self.assertTrue(Restaurant.objects.filter(id=self.restaurant.id).exists())
 
     def test_user_only_sees_their_own_restaurant_entries(self):
         UserRestaurant.objects.create(user=self.user, restaurant=self.restaurant)
