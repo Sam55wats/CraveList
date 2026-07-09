@@ -1,4 +1,4 @@
-from rest_framework import filters, permissions, viewsets
+from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
@@ -80,6 +80,32 @@ class UserRestaurantViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(restaurant__price_level=price_level)
 
         return queryset.select_related("restaurant", "user")
+
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        restaurant = serializer.validated_data["restaurant"]
+        existing_entry = UserRestaurant.objects.filter(
+            user=request.user,
+            restaurant=restaurant,
+        ).first()
+
+        if existing_entry is not None:
+            data = request.data.copy()
+            visit_fields = {"visited", "rating", "notes", "visited_at"}
+
+            if "bookmarked" not in data and visit_fields.isdisjoint(data):
+                data["bookmarked"] = True
+
+            serializer = self.get_serializer(existing_entry, data=data, partial=True)
+            serializer.is_valid(raise_exception=True)
+            serializer.save(user=request.user)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
