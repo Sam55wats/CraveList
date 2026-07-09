@@ -60,6 +60,14 @@ class UserRestaurantSerializer(serializers.ModelSerializer):
                 {"rating": "Rating can only be set after visiting the restaurant."}
             )
 
+        if visited and rating is None:
+            raise serializers.ValidationError(
+                {"rating": "Rating is required after visiting the restaurant."}
+            )
+
+        if visited:
+            data["bookmarked"] = False
+
         return data
 
 
