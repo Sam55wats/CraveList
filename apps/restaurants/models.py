@@ -64,6 +64,23 @@ class UserRestaurant(models.Model):
         return f"{self.user} - {self.restaurant}"
 
 
+class UserRestaurantPhoto(models.Model):
+    user_restaurant = models.ForeignKey(
+        UserRestaurant,
+        on_delete=models.CASCADE,
+        related_name="photos",
+    )
+    image = models.ImageField(upload_to="restaurant_photos/")
+    description = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+
+    def __str__(self):
+        return f"Photo for {self.user_restaurant}"
+
+
 class Follow(models.Model):
     follower = models.ForeignKey(
         settings.AUTH_USER_MODEL,
