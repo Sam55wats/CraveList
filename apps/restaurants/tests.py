@@ -1,12 +1,33 @@
+import shutil
+import tempfile
+
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.core.management import call_command
+from django.test import override_settings
 from rest_framework.test import APITestCase
 
-from .models import Follow, Restaurant, UserRestaurant
+from .models import Follow, Restaurant, UserRestaurant, UserRestaurantPhoto
 from .serializers import RestaurantSerializer
 
 
 User = get_user_model()
+TEST_MEDIA_ROOT = tempfile.mkdtemp()
+
+
+def tearDownModule():
+    shutil.rmtree(TEST_MEDIA_ROOT, ignore_errors=True)
+
+
+def get_test_image(name="test.gif"):
+    return SimpleUploadedFile(
+        name,
+        (
+            b"GIF87a\x01\x00\x01\x00\x80\x01\x00\x00\x00\x00\xff\xff\xff,"
+            b"\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+        ),
+        content_type="image/gif",
+    )
 
 
 class RestaurantAPITests(APITestCase):
@@ -503,6 +524,35 @@ class UserRestaurantAPITests(APITestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("rating", response.data)
 
+    def test_notes_require_visited_restaurant(self):
+        response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
+                "notes": "Want to try the tacos.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("notes", response.data)
+
+    def test_notes_are_allowed_after_visiting_and_rating(self):
+        response = self.client.post(
+            "/api/my-restaurants/",
+            {
+                "restaurant_id": self.restaurant.id,
+                "visited": True,
+                "rating": "9.2",
+                "notes": "Loved the tacos.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        entry = UserRestaurant.objects.get()
+        self.assertEqual(entry.notes, "Loved the tacos.")
+
     def test_visited_restaurant_is_automatically_unbookmarked(self):
         response = self.client.post(
             "/api/my-restaurants/",
@@ -591,6 +641,179 @@ class UserRestaurantAPITests(APITestCase):
         response = self.client.get("/api/my-restaurants/")
 
         self.assertEqual(response.status_code, 403)
+
+
+@override_settings(MEDIA_ROOT=TEST_MEDIA_ROOT)
+class UserRestaurantPhotoAPITests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="samuel", password="password")
+        self.other_user = User.objects.create_user(username="other", password="password")
+        self.restaurant = Restaurant.objects.create(name="Taco Bamba")
+        self.entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            visited=True,
+            rating="9.2",
+        )
+        self.client.force_authenticate(user=self.user)
+
+    def test_can_upload_photo_for_visited_rated_restaurant_entry(self):
+        response = self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": self.entry.id,
+                "image": get_test_image(),
+                "description": "Tacos from lunch.",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(UserRestaurantPhoto.objects.count(), 1)
+        photo = UserRestaurantPhoto.objects.get()
+        self.assertEqual(photo.user_restaurant, self.entry)
+        self.assertEqual(photo.description, "Tacos from lunch.")
+        self.assertEqual(response.data["user"], "samuel")
+        self.assertEqual(response.data["restaurant"]["name"], "Taco Bamba")
+
+    def test_photo_description_is_required(self):
+        response = self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": self.entry.id,
+                "image": get_test_image(),
+                "description": "   ",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("description", response.data)
+
+    def test_photo_requires_visited_rated_restaurant_entry(self):
+        unvisited_entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=Restaurant.objects.create(name="Sushi Spot"),
+        )
+
+        response = self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": unvisited_entry.id,
+                "image": get_test_image(),
+                "description": "Sushi photo.",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("user_restaurant_id", response.data)
+
+    def test_user_cannot_upload_photo_to_another_users_entry(self):
+        other_entry = UserRestaurant.objects.create(
+            user=self.other_user,
+            restaurant=Restaurant.objects.create(name="Other Place"),
+            visited=True,
+            rating="8.1",
+        )
+
+        response = self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": other_entry.id,
+                "image": get_test_image(),
+                "description": "Not my visit.",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("user_restaurant_id", response.data)
+
+    def test_photos_are_publicly_readable(self):
+        upload_response = self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": self.entry.id,
+                "image": get_test_image(),
+                "description": "Public taco photo.",
+            },
+            format="multipart",
+        )
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get("/api/my-restaurant-photos/")
+
+        self.assertEqual(upload_response.status_code, 201)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["description"], "Public taco photo.")
+
+    def test_can_filter_photos_by_restaurant(self):
+        self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": self.entry.id,
+                "image": get_test_image(),
+                "description": "Taco photo.",
+            },
+            format="multipart",
+        )
+        other_restaurant = Restaurant.objects.create(name="Pizza Place")
+        other_entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=other_restaurant,
+            visited=True,
+            rating="7.5",
+        )
+        self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": other_entry.id,
+                "image": get_test_image("pizza.gif"),
+                "description": "Pizza photo.",
+            },
+            format="multipart",
+        )
+
+        response = self.client.get(
+            f"/api/my-restaurant-photos/?restaurant_id={self.restaurant.id}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.data), 1)
+        self.assertEqual(response.data[0]["description"], "Taco photo.")
+
+    def test_user_can_delete_their_own_photo(self):
+        upload_response = self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": self.entry.id,
+                "image": get_test_image(),
+                "description": "Delete this photo.",
+            },
+            format="multipart",
+        )
+
+        response = self.client.delete(
+            f"/api/my-restaurant-photos/{upload_response.data['id']}/"
+        )
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(UserRestaurantPhoto.objects.count(), 0)
+
+    def test_user_cannot_delete_another_users_photo(self):
+        photo = UserRestaurantPhoto.objects.create(
+            user_restaurant=self.entry,
+            image=get_test_image(),
+            description="Someone else's viewable photo.",
+        )
+        self.client.force_authenticate(user=self.other_user)
+
+        response = self.client.delete(f"/api/my-restaurant-photos/{photo.id}/")
+
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(UserRestaurantPhoto.objects.filter(id=photo.id).exists())
 
 
 class FollowAPITests(APITestCase):
