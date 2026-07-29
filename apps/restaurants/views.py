@@ -2,9 +2,14 @@ from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
-from .models import Follow, UserRestaurant
+from .models import Follow, UserRestaurant, UserRestaurantPhoto
 from .pagination import RestaurantPagination
-from .serializers import FollowSerializer, RestaurantSerializer, UserRestaurantSerializer
+from .serializers import (
+    FollowSerializer,
+    RestaurantSerializer,
+    UserRestaurantPhotoSerializer,
+    UserRestaurantSerializer,
+)
 from .services.locations import suggest_locations
 from .services.search import search_restaurants
 
@@ -109,6 +114,42 @@ class UserRestaurantViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+
+class UserRestaurantPhotoViewSet(viewsets.ModelViewSet):
+    serializer_class = UserRestaurantPhotoSerializer
+    http_method_names = ["get", "post", "delete", "head", "options"]
+
+    def get_permissions(self):
+        if self.action in ("list", "retrieve"):
+            return [permissions.AllowAny()]
+        return [permissions.IsAuthenticated()]
+
+    def get_queryset(self):
+        queryset = UserRestaurantPhoto.objects.select_related(
+            "user_restaurant__restaurant",
+            "user_restaurant__user",
+        )
+        query_params = self.request.query_params
+
+        restaurant_id = query_params.get("restaurant_id")
+        user_restaurant_id = query_params.get("user_restaurant_id")
+
+        if restaurant_id:
+            queryset = queryset.filter(user_restaurant__restaurant_id=restaurant_id)
+
+        if user_restaurant_id:
+            queryset = queryset.filter(user_restaurant_id=user_restaurant_id)
+
+        return queryset
+
+    def perform_destroy(self, instance):
+        if instance.user_restaurant.user != self.request.user:
+            self.permission_denied(
+                self.request,
+                message="You can only delete your own photos.",
+            )
+        instance.delete()
 
 
 class FollowViewSet(viewsets.ModelViewSet):
