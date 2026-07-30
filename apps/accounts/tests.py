@@ -1,11 +1,20 @@
 from django.contrib.auth import get_user_model
-from rest_framework.test import APITestCase
+from rest_framework.test import APIClient, APITestCase
 
 
 User = get_user_model()
 
 
 class AuthEndpointTests(APITestCase):
+    def test_can_get_csrf_token_for_frontend_session_requests(self):
+        response = self.client.get("/api/auth/csrf/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("csrfToken", response.data)
+        self.assertIn("csrftoken", response.cookies)
+        self.assertTrue(response.data["csrfToken"])
+        self.assertTrue(response.cookies["csrftoken"].value)
+
     def test_can_register_and_is_logged_in(self):
         response = self.client.post(
             "/api/auth/register/",
@@ -87,6 +96,30 @@ class AuthEndpointTests(APITestCase):
         self.client.force_authenticate(user=user)
 
         response = self.client.post("/api/auth/logout/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["detail"], "Logged out.")
+
+    def test_session_authenticated_post_requires_csrf_when_csrf_checks_are_enabled(self):
+        client = APIClient(enforce_csrf_checks=True)
+        User.objects.create_user(username="samuel", password="StrongPass123!")
+        client.login(username="samuel", password="StrongPass123!")
+
+        response = client.post("/api/auth/logout/")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_session_authenticated_post_accepts_csrf_token(self):
+        client = APIClient(enforce_csrf_checks=True)
+        User.objects.create_user(username="samuel", password="StrongPass123!")
+        client.login(username="samuel", password="StrongPass123!")
+        csrf_response = client.get("/api/auth/csrf/")
+        csrf_token = csrf_response.data["csrfToken"]
+
+        response = client.post(
+            "/api/auth/logout/",
+            HTTP_X_CSRFTOKEN=csrf_token,
+        )
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["detail"], "Logged out.")
