@@ -75,6 +75,41 @@ class RestaurantAPITests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
 
+    def test_restaurant_results_include_current_users_entry_when_authenticated(self):
+        user = User.objects.create_user(username="samuel", password="password")
+        taco_bamba = Restaurant.objects.create(name="Taco Bamba", cuisine="Mexican")
+        Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
+        entry = UserRestaurant.objects.create(
+            user=user,
+            restaurant=taco_bamba,
+            bookmarked=True,
+            visited=True,
+            rating="9.2",
+            notes="Loved the tacos.",
+        )
+        self.client.force_authenticate(user=user)
+
+        response = self.client.get("/api/restaurants/?ordering=-name")
+
+        self.assertEqual(response.status_code, 200)
+        taco_result = response.data["results"][0]
+        sushi_result = response.data["results"][1]
+        self.assertEqual(taco_result["name"], "Taco Bamba")
+        self.assertEqual(taco_result["my_entry"]["id"], entry.id)
+        self.assertTrue(taco_result["my_entry"]["bookmarked"])
+        self.assertTrue(taco_result["my_entry"]["visited"])
+        self.assertEqual(taco_result["my_entry"]["rating"], "9.2")
+        self.assertEqual(taco_result["my_entry"]["notes"], "Loved the tacos.")
+        self.assertIsNone(sushi_result["my_entry"])
+
+    def test_restaurant_results_have_no_my_entry_for_anonymous_users(self):
+        Restaurant.objects.create(name="Taco Bamba", cuisine="Mexican")
+
+        response = self.client.get("/api/restaurants/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.data["results"][0]["my_entry"])
+
     def test_can_search_restaurants_across_restaurant_fields(self):
         Restaurant.objects.create(
             name="Northwest Chinese",
@@ -616,8 +651,8 @@ class UserRestaurantAPITests(APITestCase):
         response = self.client.get("/api/my-restaurants/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["restaurant"]["name"], "Taco Bamba")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["restaurant"]["name"], "Taco Bamba")
 
     def test_can_filter_user_restaurants_by_visited_and_cuisine(self):
         UserRestaurant.objects.create(
@@ -632,8 +667,54 @@ class UserRestaurantAPITests(APITestCase):
         response = self.client.get("/api/my-restaurants/?visited=true&cuisine=mexican")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["restaurant"]["name"], "Taco Bamba")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["restaurant"]["name"], "Taco Bamba")
+
+    def test_user_restaurants_are_paginated(self):
+        created_restaurants = [
+            self.restaurant,
+            *Restaurant.objects.bulk_create(
+                [Restaurant(name=f"Restaurant {number:02d}") for number in range(24)]
+            ),
+        ]
+        UserRestaurant.objects.bulk_create(
+            [
+                UserRestaurant(user=self.user, restaurant=restaurant)
+                for restaurant in created_restaurants
+            ]
+        )
+
+        response = self.client.get("/api/my-restaurants/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 25)
+        self.assertEqual(len(response.data["results"]), 20)
+        self.assertIsNotNone(response.data["next"])
+        self.assertIsNone(response.data["previous"])
+
+    def test_user_restaurants_can_be_ordered_by_rating_descending(self):
+        sushi = Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
+        pizza = Restaurant.objects.create(name="Pizza Place", cuisine="Italian")
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=sushi,
+            visited=True,
+            rating="7.8",
+        )
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=pizza,
+            visited=True,
+            rating="9.4",
+        )
+
+        response = self.client.get("/api/my-restaurants/?ordering=-rating")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [entry["restaurant"]["name"] for entry in response.data["results"]],
+            ["Pizza Place", "Sushi Spot"],
+        )
 
     def test_authentication_is_required_for_user_restaurants(self):
         self.client.force_authenticate(user=None)
