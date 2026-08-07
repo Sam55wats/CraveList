@@ -10,6 +10,8 @@ User = get_user_model()
 
 
 class RestaurantSerializer(serializers.ModelSerializer):
+    my_entry = serializers.SerializerMethodField()
+
     class Meta:
         model = Restaurant
         fields = "__all__"
@@ -18,6 +20,35 @@ class RestaurantSerializer(serializers.ModelSerializer):
         if value is not None and not 1 <= value <= 4:
             raise serializers.ValidationError("Price level must be between 1 and 4.")
         return value
+
+    def get_my_entry(self, restaurant):
+        request = self.context.get("request")
+
+        if not request or not request.user.is_authenticated:
+            return None
+
+        user_entries = getattr(restaurant, "current_user_entries", None)
+
+        if user_entries is None:
+            entry = UserRestaurant.objects.filter(
+                user=request.user,
+                restaurant=restaurant,
+            ).first()
+        else:
+            entry = user_entries[0] if user_entries else None
+
+        if entry is None:
+            return None
+
+        return {
+            "id": entry.id,
+            "bookmarked": entry.bookmarked,
+            "visited": entry.visited,
+            "rating": str(entry.rating) if entry.rating is not None else None,
+            "notes": entry.notes,
+            "visited_at": entry.visited_at,
+            "updated_at": entry.updated_at,
+        }
 
 
 class UserRestaurantSerializer(serializers.ModelSerializer):
