@@ -1,3 +1,4 @@
+from django.db.models import Prefetch
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
@@ -34,12 +35,40 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     ]
     ordering = ["name"]
 
+    def add_current_user_entries(self, queryset):
+        user = self.request.user
+
+        if not user.is_authenticated:
+            return queryset
+
+        return queryset.prefetch_related(
+            Prefetch(
+                "user_entries",
+                queryset=UserRestaurant.objects.filter(user=user).only(
+                    "id",
+                    "user_id",
+                    "restaurant_id",
+                    "bookmarked",
+                    "visited",
+                    "rating",
+                    "notes",
+                    "visited_at",
+                    "updated_at",
+                ),
+                to_attr="current_user_entries",
+            )
+        )
+
     def get_queryset(self):
-        return search_restaurants(self.request.query_params)
+        return self.add_current_user_entries(
+            search_restaurants(self.request.query_params)
+        )
 
     @action(detail=False, methods=["get"], url_path="search")
     def search(self, request):
-        queryset = self.filter_queryset(search_restaurants(request.query_params))
+        queryset = self.filter_queryset(
+            self.add_current_user_entries(search_restaurants(request.query_params))
+        )
         page = self.paginate_queryset(queryset)
 
         if page is not None:
@@ -58,6 +87,19 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
 class UserRestaurantViewSet(viewsets.ModelViewSet):
     serializer_class = UserRestaurantSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = RestaurantPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = [
+        "created_at",
+        "updated_at",
+        "visited_at",
+        "rating",
+        "restaurant__name",
+        "restaurant__cuisine",
+        "restaurant__city",
+        "restaurant__price_level",
+    ]
+    ordering = ["-updated_at"]
 
     def get_queryset(self):
         queryset = UserRestaurant.objects.filter(user=self.request.user)
