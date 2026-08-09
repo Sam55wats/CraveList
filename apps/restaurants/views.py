@@ -7,6 +7,7 @@ from .models import Follow, UserRestaurant, UserRestaurantPhoto
 from .pagination import RestaurantPagination
 from .serializers import (
     FollowSerializer,
+    PublicUserRestaurantSerializer,
     RestaurantSerializer,
     UserRestaurantPhotoSerializer,
     UserRestaurantSerializer,
@@ -197,6 +198,10 @@ class UserRestaurantPhotoViewSet(viewsets.ModelViewSet):
 class FollowViewSet(viewsets.ModelViewSet):
     serializer_class = FollowSerializer
     permission_classes = [permissions.IsAuthenticated]
+    pagination_class = RestaurantPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ["created_at"]
+    ordering = ["-created_at"]
 
     def get_queryset(self):
         return Follow.objects.filter(follower=self.request.user).select_related(
@@ -204,5 +209,74 @@ class FollowViewSet(viewsets.ModelViewSet):
             "following",
         )
 
+    def create(self, request, *args, **kwargs):
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        following = serializer.validated_data["following"]
+        existing_follow = Follow.objects.filter(
+            follower=request.user,
+            following=following,
+        ).first()
+
+        if existing_follow is not None:
+            serializer = self.get_serializer(existing_follow)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+
+        self.perform_create(serializer)
+        headers = self.get_success_headers(serializer.data)
+        return Response(serializer.data, status=status.HTTP_201_CREATED, headers=headers)
+
     def perform_create(self, serializer):
         serializer.save(follower=self.request.user)
+
+    @action(detail=False, methods=["get"], url_path="followers")
+    def followers(self, request):
+        queryset = Follow.objects.filter(following=request.user).select_related(
+            "follower",
+            "following",
+        )
+        page = self.paginate_queryset(queryset)
+
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+    @action(detail=False, methods=["get"], url_path="following")
+    def following(self, request):
+        queryset = self.filter_queryset(self.get_queryset())
+        page = self.paginate_queryset(queryset)
+
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+
+
+class FeedViewSet(viewsets.ReadOnlyModelViewSet):
+    serializer_class = PublicUserRestaurantSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = RestaurantPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ["created_at", "updated_at", "visited_at", "rating"]
+    ordering = ["-updated_at"]
+
+    def get_queryset(self):
+        followed_user_ids = Follow.objects.filter(
+            follower=self.request.user,
+        ).values("following_id")
+
+        return (
+            UserRestaurant.objects.filter(
+                user_id__in=followed_user_ids,
+                visited=True,
+                rating__isnull=False,
+            )
+            .select_related("restaurant", "user")
+            .order_by("-updated_at")
+        )
