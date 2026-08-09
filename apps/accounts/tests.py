@@ -1,6 +1,8 @@
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient, APITestCase
 
+from restaurants.models import Follow, Restaurant, UserRestaurant
+
 
 User = get_user_model()
 
@@ -123,3 +125,60 @@ class AuthEndpointTests(APITestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["detail"], "Logged out.")
+
+
+class PublicUserAPITests(APITestCase):
+    def test_can_list_public_users_without_private_email(self):
+        User.objects.create_user(
+            username="samuel",
+            email="samuel@example.com",
+            password="password",
+        )
+        User.objects.create_user(username="friend", password="password")
+
+        response = self.client.get("/api/users/?ordering=username")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 2)
+        self.assertEqual(response.data["results"][0]["username"], "friend")
+        self.assertNotIn("email", response.data["results"][0])
+        self.assertIn("followers_count", response.data["results"][0])
+        self.assertIn("following_count", response.data["results"][0])
+
+    def test_public_user_detail_includes_follow_status_for_logged_in_user(self):
+        user = User.objects.create_user(username="samuel", password="password")
+        friend = User.objects.create_user(username="friend", password="password")
+        follow = Follow.objects.create(follower=user, following=friend)
+        self.client.force_authenticate(user=user)
+
+        response = self.client.get(f"/api/users/{friend.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["username"], "friend")
+        self.assertTrue(response.data["is_following"])
+        self.assertEqual(response.data["follow_id"], follow.id)
+        self.assertEqual(response.data["followers_count"], 1)
+
+    def test_public_user_restaurants_only_shows_visited_rated_entries(self):
+        friend = User.objects.create_user(username="friend", password="password")
+        taco_bamba = Restaurant.objects.create(name="Taco Bamba")
+        sushi_spot = Restaurant.objects.create(name="Sushi Spot")
+        UserRestaurant.objects.create(
+            user=friend,
+            restaurant=taco_bamba,
+            visited=True,
+            rating="9.2",
+            notes="Loved it.",
+        )
+        UserRestaurant.objects.create(
+            user=friend,
+            restaurant=sushi_spot,
+            bookmarked=True,
+        )
+
+        response = self.client.get(f"/api/users/{friend.id}/restaurants/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["restaurant"]["name"], "Taco Bamba")
+        self.assertEqual(response.data["results"][0]["rating"], "9.2")
