@@ -918,6 +918,27 @@ class FollowAPITests(APITestCase):
         self.assertEqual(follow.follower, self.user)
         self.assertEqual(follow.following, self.friend)
 
+    def test_following_same_user_twice_returns_existing_follow(self):
+        first_response = self.client.post(
+            "/api/follows/",
+            {
+                "following_id": self.friend.id,
+            },
+            format="json",
+        )
+        second_response = self.client.post(
+            "/api/follows/",
+            {
+                "following_id": self.friend.id,
+            },
+            format="json",
+        )
+
+        self.assertEqual(first_response.status_code, 201)
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(Follow.objects.count(), 1)
+        self.assertEqual(first_response.data["id"], second_response.data["id"])
+
     def test_user_cannot_follow_themself(self):
         response = self.client.post(
             "/api/follows/",
@@ -938,5 +959,79 @@ class FollowAPITests(APITestCase):
         response = self.client.get("/api/follows/")
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["following"], "friend")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["following"], "friend")
+
+    def test_can_list_followers_and_following(self):
+        follower = User.objects.create_user(username="follower", password="password")
+        Follow.objects.create(follower=self.user, following=self.friend)
+        Follow.objects.create(follower=follower, following=self.user)
+
+        following_response = self.client.get("/api/follows/following/")
+        followers_response = self.client.get("/api/follows/followers/")
+
+        self.assertEqual(following_response.status_code, 200)
+        self.assertEqual(following_response.data["count"], 1)
+        self.assertEqual(following_response.data["results"][0]["following"], "friend")
+
+        self.assertEqual(followers_response.status_code, 200)
+        self.assertEqual(followers_response.data["count"], 1)
+        self.assertEqual(followers_response.data["results"][0]["follower"], "follower")
+
+    def test_can_unfollow_user_by_deleting_follow(self):
+        follow = Follow.objects.create(follower=self.user, following=self.friend)
+
+        response = self.client.delete(f"/api/follows/{follow.id}/")
+
+        self.assertEqual(response.status_code, 204)
+        self.assertEqual(Follow.objects.count(), 0)
+
+
+class FeedAPITests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="samuel", password="password")
+        self.friend = User.objects.create_user(username="friend", password="password")
+        self.stranger = User.objects.create_user(username="stranger", password="password")
+        self.client.force_authenticate(user=self.user)
+
+    def test_feed_shows_visited_rated_restaurants_from_followed_users(self):
+        Follow.objects.create(follower=self.user, following=self.friend)
+        friend_restaurant = Restaurant.objects.create(name="Friend Tacos")
+        friend_unvisited = Restaurant.objects.create(name="Friend Bookmark")
+        stranger_restaurant = Restaurant.objects.create(name="Stranger Sushi")
+        UserRestaurant.objects.create(
+            user=self.friend,
+            restaurant=friend_restaurant,
+            visited=True,
+            rating="9.1",
+            notes="Great tacos.",
+        )
+        UserRestaurant.objects.create(
+            user=self.friend,
+            restaurant=friend_unvisited,
+            bookmarked=True,
+        )
+        UserRestaurant.objects.create(
+            user=self.stranger,
+            restaurant=stranger_restaurant,
+            visited=True,
+            rating="8.4",
+        )
+
+        response = self.client.get("/api/feed/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["user"], "friend")
+        self.assertEqual(
+            response.data["results"][0]["restaurant"]["name"],
+            "Friend Tacos",
+        )
+        self.assertEqual(response.data["results"][0]["rating"], "9.1")
+
+    def test_feed_requires_authentication(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get("/api/feed/")
+
+        self.assertEqual(response.status_code, 403)
