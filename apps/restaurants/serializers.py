@@ -108,6 +108,25 @@ class UserRestaurantSerializer(serializers.ModelSerializer):
         return data
 
 
+class PublicUserRestaurantSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField(read_only=True)
+    restaurant = RestaurantSerializer(read_only=True)
+
+    class Meta:
+        model = UserRestaurant
+        fields = (
+            "id",
+            "user",
+            "restaurant",
+            "visited",
+            "rating",
+            "notes",
+            "visited_at",
+            "created_at",
+            "updated_at",
+        )
+
+
 class UserRestaurantPhotoSerializer(serializers.ModelSerializer):
     user = serializers.CharField(source="user_restaurant.user.username", read_only=True)
     restaurant = RestaurantSerializer(source="user_restaurant.restaurant", read_only=True)
