@@ -53,82 +53,6 @@ class RestaurantSerializer(serializers.ModelSerializer):
         }
 
 
-class UserRestaurantSerializer(serializers.ModelSerializer):
-    restaurant = RestaurantSerializer(read_only=True)
-    restaurant_id = serializers.PrimaryKeyRelatedField(
-        queryset=Restaurant.objects.all(),
-        source="restaurant",
-        write_only=True,
-    )
-    user = serializers.StringRelatedField(read_only=True)
-
-    class Meta:
-        model = UserRestaurant
-        fields = (
-            "id",
-            "user",
-            "restaurant",
-            "restaurant_id",
-            "bookmarked",
-            "visited",
-            "rating",
-            "notes",
-            "visited_at",
-            "created_at",
-            "updated_at",
-        )
-        read_only_fields = ("created_at", "updated_at")
-
-    def validate_rating(self, value):
-        if value is not None and not Decimal("1.0") <= value <= Decimal("10.0"):
-            raise serializers.ValidationError("Rating must be between 1.0 and 10.0.")
-        return value
-
-    def validate(self, data):
-        visited = data.get("visited", getattr(self.instance, "visited", False))
-        rating = data.get("rating", getattr(self.instance, "rating", None))
-        notes = data.get("notes", getattr(self.instance, "notes", ""))
-
-        if rating is not None and not visited:
-            raise serializers.ValidationError(
-                {"rating": "Rating can only be set after visiting the restaurant."}
-            )
-
-        if notes and not visited:
-            raise serializers.ValidationError(
-                {"notes": "Notes can only be added after visiting the restaurant."}
-            )
-
-        if visited and rating is None:
-            raise serializers.ValidationError(
-                {"rating": "Rating is required after visiting the restaurant."}
-            )
-
-        if visited:
-            data["bookmarked"] = False
-
-        return data
-
-
-class PublicUserRestaurantSerializer(serializers.ModelSerializer):
-    user = serializers.StringRelatedField(read_only=True)
-    restaurant = RestaurantSerializer(read_only=True)
-
-    class Meta:
-        model = UserRestaurant
-        fields = (
-            "id",
-            "user",
-            "restaurant",
-            "visited",
-            "rating",
-            "notes",
-            "visited_at",
-            "created_at",
-            "updated_at",
-        )
-
-
 class UserRestaurantPhotoSerializer(serializers.ModelSerializer):
     user = serializers.CharField(source="user_restaurant.user.username", read_only=True)
     restaurant = RestaurantSerializer(source="user_restaurant.restaurant", read_only=True)
@@ -198,6 +122,92 @@ class UserRestaurantPhotoSerializer(serializers.ModelSerializer):
         return value
 
 
+class UserRestaurantPhotoSummarySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = UserRestaurantPhoto
+        fields = ("id", "image", "description", "created_at")
+
+
+class UserRestaurantSerializer(serializers.ModelSerializer):
+    restaurant = RestaurantSerializer(read_only=True)
+    restaurant_id = serializers.PrimaryKeyRelatedField(
+        queryset=Restaurant.objects.all(),
+        source="restaurant",
+        write_only=True,
+    )
+    user = serializers.StringRelatedField(read_only=True)
+    photos = UserRestaurantPhotoSummarySerializer(many=True, read_only=True)
+
+    class Meta:
+        model = UserRestaurant
+        fields = (
+            "id",
+            "user",
+            "restaurant",
+            "restaurant_id",
+            "bookmarked",
+            "visited",
+            "rating",
+            "notes",
+            "visited_at",
+            "photos",
+            "created_at",
+            "updated_at",
+        )
+        read_only_fields = ("created_at", "updated_at")
+
+    def validate_rating(self, value):
+        if value is not None and not Decimal("1.0") <= value <= Decimal("10.0"):
+            raise serializers.ValidationError("Rating must be between 1.0 and 10.0.")
+        return value
+
+    def validate(self, data):
+        visited = data.get("visited", getattr(self.instance, "visited", False))
+        rating = data.get("rating", getattr(self.instance, "rating", None))
+        notes = data.get("notes", getattr(self.instance, "notes", ""))
+
+        if rating is not None and not visited:
+            raise serializers.ValidationError(
+                {"rating": "Rating can only be set after visiting the restaurant."}
+            )
+
+        if notes and not visited:
+            raise serializers.ValidationError(
+                {"notes": "Notes can only be added after visiting the restaurant."}
+            )
+
+        if visited and rating is None:
+            raise serializers.ValidationError(
+                {"rating": "Rating is required after visiting the restaurant."}
+            )
+
+        if visited:
+            data["bookmarked"] = False
+
+        return data
+
+
+class PublicUserRestaurantSerializer(serializers.ModelSerializer):
+    user = serializers.StringRelatedField(read_only=True)
+    restaurant = RestaurantSerializer(read_only=True)
+    photos = UserRestaurantPhotoSummarySerializer(many=True, read_only=True)
+
+    class Meta:
+        model = UserRestaurant
+        fields = (
+            "id",
+            "user",
+            "restaurant",
+            "visited",
+            "rating",
+            "notes",
+            "visited_at",
+            "photos",
+            "created_at",
+            "updated_at",
+        )
+
+
 class FollowSerializer(serializers.ModelSerializer):
     follower = serializers.StringRelatedField(read_only=True)
     following = serializers.StringRelatedField(read_only=True)
@@ -228,3 +238,16 @@ class FollowSerializer(serializers.ModelSerializer):
 class ExternalRestaurantImportSerializer(serializers.Serializer):
     external_source = serializers.CharField(default="seed")
     external_place_id = serializers.CharField()
+
+
+class ExternalRestaurantImportAndSaveSerializer(ExternalRestaurantImportSerializer):
+    bookmarked = serializers.BooleanField(default=True)
+    visited = serializers.BooleanField(default=False)
+    rating = serializers.DecimalField(
+        max_digits=3,
+        decimal_places=1,
+        required=False,
+        allow_null=True,
+    )
+    notes = serializers.CharField(required=False, allow_blank=True)
+    visited_at = serializers.DateField(required=False, allow_null=True)
