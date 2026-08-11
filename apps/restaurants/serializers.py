@@ -1,5 +1,7 @@
 from decimal import Decimal
+from pathlib import Path
 
+from django.conf import settings
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
@@ -167,6 +169,34 @@ class UserRestaurantPhotoSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Description is required for photos.")
         return value
 
+    def validate_image(self, value):
+        max_photo_bytes = getattr(settings, "MAX_RESTAURANT_PHOTO_BYTES", 5 * 1024 * 1024)
+        allowed_content_types = getattr(
+            settings,
+            "ALLOWED_RESTAURANT_PHOTO_CONTENT_TYPES",
+            ["image/jpeg", "image/png", "image/webp", "image/gif"],
+        )
+        allowed_extensions = getattr(
+            settings,
+            "ALLOWED_RESTAURANT_PHOTO_EXTENSIONS",
+            [".jpg", ".jpeg", ".png", ".webp", ".gif"],
+        )
+
+        if value.size > max_photo_bytes:
+            raise serializers.ValidationError("Photo must be 5 MB or smaller.")
+
+        if value.content_type not in allowed_content_types:
+            raise serializers.ValidationError(
+                "Photo must be a JPEG, PNG, WEBP, or GIF image."
+            )
+
+        if Path(value.name).suffix.lower() not in allowed_extensions:
+            raise serializers.ValidationError(
+                "Photo file extension must be JPG, PNG, WEBP, or GIF."
+            )
+
+        return value
+
 
 class FollowSerializer(serializers.ModelSerializer):
     follower = serializers.StringRelatedField(read_only=True)
@@ -193,3 +223,8 @@ class FollowSerializer(serializers.ModelSerializer):
         if request and request.user == value:
             raise serializers.ValidationError("You cannot follow yourself.")
         return value
+
+
+class ExternalRestaurantImportSerializer(serializers.Serializer):
+    external_source = serializers.CharField(default="seed")
+    external_place_id = serializers.CharField()
