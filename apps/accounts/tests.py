@@ -1,7 +1,7 @@
 from django.contrib.auth import get_user_model
 from rest_framework.test import APIClient, APITestCase
 
-from restaurants.models import Follow, Restaurant, UserRestaurant
+from restaurants.models import Follow, Restaurant, UserRestaurant, UserRestaurantPhoto
 
 
 User = get_user_model()
@@ -191,12 +191,17 @@ class PublicUserAPITests(APITestCase):
         friend = User.objects.create_user(username="friend", password="password")
         taco_bamba = Restaurant.objects.create(name="Taco Bamba")
         sushi_spot = Restaurant.objects.create(name="Sushi Spot")
-        UserRestaurant.objects.create(
+        entry = UserRestaurant.objects.create(
             user=friend,
             restaurant=taco_bamba,
             visited=True,
             rating="9.2",
             notes="Loved it.",
+        )
+        UserRestaurantPhoto.objects.create(
+            user_restaurant=entry,
+            image="restaurant_photos/test.gif",
+            description="Taco photo.",
         )
         UserRestaurant.objects.create(
             user=friend,
@@ -210,3 +215,4 @@ class PublicUserAPITests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["restaurant"]["name"], "Taco Bamba")
         self.assertEqual(response.data["results"][0]["rating"], "9.2")
+        self.assertEqual(response.data["results"][0]["photos"][0]["description"], "Taco photo.")
