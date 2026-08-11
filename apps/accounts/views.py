@@ -1,6 +1,6 @@
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth import get_user_model
-from django.db.models import Count, Exists, OuterRef, Subquery
+from django.db.models import Avg, Count, Exists, OuterRef, Q, Subquery
 from django.middleware.csrf import get_token
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import filters, permissions, status, viewsets
@@ -79,6 +79,17 @@ class PublicUserViewSet(viewsets.ReadOnlyModelViewSet):
         queryset = User.objects.annotate(
             followers_count=Count("follower_relationships", distinct=True),
             following_count=Count("following_relationships", distinct=True),
+            visited_count=Count(
+                "restaurant_entries",
+                filter=Q(restaurant_entries__visited=True),
+                distinct=True,
+            ),
+            bookmarked_count=Count(
+                "restaurant_entries",
+                filter=Q(restaurant_entries__bookmarked=True),
+                distinct=True,
+            ),
+            average_rating=Avg("restaurant_entries__rating"),
         )
         user = self.request.user
 
