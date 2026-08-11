@@ -1,13 +1,13 @@
-from decimal import Decimal, InvalidOperation
-
-from django.db.models import Prefetch, Q
+from django.db.models import Prefetch
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
 from .models import Follow, Restaurant, UserRestaurant, UserRestaurantPhoto
+from .docs import API_ENDPOINTS
 from .pagination import RestaurantPagination
 from .serializers import (
+    ExternalRestaurantImportAndSaveSerializer,
     ExternalRestaurantImportSerializer,
     FollowSerializer,
     PublicUserRestaurantSerializer,
@@ -19,11 +19,23 @@ from .services.locations import suggest_locations
 from .services.providers import get_restaurant_provider
 from .services.recommendations import recommend_restaurants
 from .services.search import search_restaurants
+from .services.filters import filter_user_restaurants
 
 
 @api_view(["GET"])
 def health_check(request):
     return Response({"status": "ok"})
+
+
+@api_view(["GET"])
+def api_docs(request):
+    return Response(
+        {
+            "name": "CraveList API",
+            "description": "Backend endpoints currently available to the future React frontend.",
+            "endpoints": API_ENDPOINTS,
+        }
+    )
 
 
 class CurrentUserEntryMixin:
@@ -143,22 +155,96 @@ class ExternalRestaurantViewSet(viewsets.ViewSet):
         serializer = ExternalRestaurantImportSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
 
-        external_source = serializer.validated_data["external_source"]
-        external_place_id = serializer.validated_data["external_place_id"]
+        restaurant, created, error_response = self.import_from_provider(
+            serializer.validated_data["external_source"],
+            serializer.validated_data["external_place_id"],
+        )
+
+        if error_response is not None:
+            return error_response
+
+        response_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        response_serializer = RestaurantSerializer(
+            restaurant,
+            context={"request": request},
+        )
+        return Response(response_serializer.data, status=response_status)
+
+    @action(detail=False, methods=["post"], url_path="import-and-save")
+    def import_and_save(self, request):
+        serializer = ExternalRestaurantImportAndSaveSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        validated_data = serializer.validated_data
+
+        restaurant, restaurant_created, error_response = self.import_from_provider(
+            validated_data["external_source"],
+            validated_data["external_place_id"],
+        )
+
+        if error_response is not None:
+            return error_response
+
+        user_entry, entry_created = UserRestaurant.objects.get_or_create(
+            user=request.user,
+            restaurant=restaurant,
+        )
+        entry_data = {
+            "restaurant_id": restaurant.id,
+        }
+
+        if "bookmarked" in request.data or not user_entry.visited:
+            entry_data["bookmarked"] = validated_data["bookmarked"]
+
+        if "visited" in request.data:
+            entry_data["visited"] = validated_data["visited"]
+
+        for optional_field in ("rating", "notes", "visited_at"):
+            if optional_field in validated_data:
+                entry_data[optional_field] = validated_data[optional_field]
+
+        entry_serializer = UserRestaurantSerializer(
+            user_entry,
+            data=entry_data,
+            partial=True,
+            context={"request": request},
+        )
+        entry_serializer.is_valid(raise_exception=True)
+        entry_serializer.save(user=request.user)
+
+        response_status = (
+            status.HTTP_201_CREATED
+            if restaurant_created or entry_created
+            else status.HTTP_200_OK
+        )
+        response_serializer = RestaurantSerializer(
+            restaurant,
+            context={"request": request},
+        )
+        return Response(response_serializer.data, status=response_status)
+
+    def import_from_provider(self, external_source, external_place_id):
         provider = get_restaurant_provider(external_source)
 
         if provider is None:
-            return Response(
-                {"external_source": "Unsupported restaurant provider."},
-                status=status.HTTP_400_BAD_REQUEST,
+            return (
+                None,
+                False,
+                Response(
+                    {"external_source": "Unsupported restaurant provider."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                ),
             )
 
         provider_restaurant = provider.get(external_place_id)
 
         if provider_restaurant is None:
-            return Response(
-                {"external_place_id": "Restaurant was not found by this provider."},
-                status=status.HTTP_404_NOT_FOUND,
+            return (
+                None,
+                False,
+                Response(
+                    {"external_place_id": "Restaurant was not found by this provider."},
+                    status=status.HTTP_404_NOT_FOUND,
+                ),
             )
 
         restaurant, created = Restaurant.objects.update_or_create(
@@ -166,12 +252,7 @@ class ExternalRestaurantViewSet(viewsets.ViewSet):
             external_place_id=external_place_id,
             defaults=provider_restaurant.to_restaurant_defaults(),
         )
-        response_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
-        response_serializer = RestaurantSerializer(
-            restaurant,
-            context={"request": request},
-        )
-        return Response(response_serializer.data, status=response_status)
+        return restaurant, created, None
 
 
 class UserRestaurantViewSet(viewsets.ModelViewSet):
@@ -193,30 +274,8 @@ class UserRestaurantViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         queryset = UserRestaurant.objects.filter(user=self.request.user)
-        query_params = self.request.query_params
-
-        bookmarked = query_params.get("bookmarked")
-        visited = query_params.get("visited")
-        cuisine = query_params.get("cuisine")
-        city = query_params.get("city")
-        price_level = query_params.get("price_level")
-
-        if bookmarked is not None:
-            queryset = queryset.filter(bookmarked=bookmarked.lower() == "true")
-
-        if visited is not None:
-            queryset = queryset.filter(visited=visited.lower() == "true")
-
-        if cuisine:
-            queryset = queryset.filter(restaurant__cuisine__iexact=cuisine)
-
-        if city:
-            queryset = queryset.filter(restaurant__city__iexact=city)
-
-        if price_level:
-            queryset = queryset.filter(restaurant__price_level=price_level)
-
-        return queryset.select_related("restaurant", "user")
+        queryset = filter_user_restaurants(queryset, self.request.query_params)
+        return queryset.select_related("restaurant", "user").prefetch_related("photos")
 
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -381,44 +440,4 @@ class FeedViewSet(viewsets.ReadOnlyModelViewSet):
             .select_related("restaurant", "user")
             .order_by("-updated_at")
         )
-        query_params = self.request.query_params
-
-        search = query_params.get("search") or query_params.get("q")
-        location = query_params.get("location")
-        cuisine = query_params.get("cuisine")
-        city = query_params.get("city")
-        price_level = query_params.get("price_level")
-        min_rating = query_params.get("min_rating")
-
-        if search:
-            queryset = queryset.filter(
-                Q(restaurant__name__icontains=search)
-                | Q(restaurant__cuisine__icontains=search)
-                | Q(restaurant__address__icontains=search)
-                | Q(notes__icontains=search)
-            )
-
-        if location:
-            queryset = queryset.filter(
-                Q(restaurant__address__icontains=location)
-                | Q(restaurant__city__icontains=location)
-                | Q(restaurant__state__icontains=location)
-                | Q(restaurant__country__icontains=location)
-            )
-
-        if cuisine:
-            queryset = queryset.filter(restaurant__cuisine__icontains=cuisine)
-
-        if city:
-            queryset = queryset.filter(restaurant__city__iexact=city)
-
-        if price_level:
-            queryset = queryset.filter(restaurant__price_level=price_level)
-
-        if min_rating:
-            try:
-                queryset = queryset.filter(rating__gte=Decimal(min_rating))
-            except InvalidOperation:
-                queryset = queryset.none()
-
-        return queryset
+        return filter_user_restaurants(queryset, self.request.query_params)
