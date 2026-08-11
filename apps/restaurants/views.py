@@ -1,11 +1,14 @@
-from django.db.models import Prefetch
+from decimal import Decimal, InvalidOperation
+
+from django.db.models import Prefetch, Q
 from rest_framework import filters, permissions, status, viewsets
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 
-from .models import Follow, UserRestaurant, UserRestaurantPhoto
+from .models import Follow, Restaurant, UserRestaurant, UserRestaurantPhoto
 from .pagination import RestaurantPagination
 from .serializers import (
+    ExternalRestaurantImportSerializer,
     FollowSerializer,
     PublicUserRestaurantSerializer,
     RestaurantSerializer,
@@ -13,6 +16,8 @@ from .serializers import (
     UserRestaurantSerializer,
 )
 from .services.locations import suggest_locations
+from .services.providers import get_restaurant_provider
+from .services.recommendations import recommend_restaurants
 from .services.search import search_restaurants
 
 
@@ -21,21 +26,7 @@ def health_check(request):
     return Response({"status": "ok"})
 
 
-class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
-    serializer_class = RestaurantSerializer
-    pagination_class = RestaurantPagination
-    filter_backends = [filters.OrderingFilter]
-    ordering_fields = [
-        "name",
-        "cuisine",
-        "price_level",
-        "city",
-        "state",
-        "created_at",
-        "updated_at",
-    ]
-    ordering = ["name"]
-
+class CurrentUserEntryMixin:
     def add_current_user_entries(self, queryset):
         user = self.request.user
 
@@ -60,6 +51,22 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
             )
         )
 
+
+class RestaurantViewSet(CurrentUserEntryMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = RestaurantSerializer
+    pagination_class = RestaurantPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = [
+        "name",
+        "cuisine",
+        "price_level",
+        "city",
+        "state",
+        "created_at",
+        "updated_at",
+    ]
+    ordering = ["name"]
+
     def get_queryset(self):
         return self.add_current_user_entries(
             search_restaurants(self.request.query_params)
@@ -83,6 +90,88 @@ class RestaurantViewSet(viewsets.ReadOnlyModelViewSet):
     def location_suggestions(self, request):
         suggestions = suggest_locations(request.query_params.get("q"))
         return Response(suggestions)
+
+
+class RecommendationViewSet(CurrentUserEntryMixin, viewsets.ReadOnlyModelViewSet):
+    serializer_class = RestaurantSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    pagination_class = RestaurantPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = [
+        "name",
+        "cuisine",
+        "price_level",
+        "city",
+        "state",
+        "created_at",
+        "updated_at",
+    ]
+    ordering = ["name"]
+
+    def get_queryset(self):
+        return self.add_current_user_entries(
+            recommend_restaurants(self.request.user, self.request.query_params)
+        )
+
+
+class ExternalRestaurantViewSet(viewsets.ViewSet):
+    def get_permissions(self):
+        if self.action == "search":
+            return [permissions.AllowAny()]
+
+        return [permissions.IsAuthenticated()]
+
+    @action(detail=False, methods=["get"], url_path="search")
+    def search(self, request):
+        source = request.query_params.get("source", "seed")
+        provider = get_restaurant_provider(source)
+
+        if provider is None:
+            return Response(
+                {"source": "Unsupported restaurant provider."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        restaurants = [
+            restaurant.to_response_data()
+            for restaurant in provider.search(request.query_params)
+        ]
+        return Response(restaurants)
+
+    @action(detail=False, methods=["post"], url_path="import")
+    def import_restaurant(self, request):
+        serializer = ExternalRestaurantImportSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        external_source = serializer.validated_data["external_source"]
+        external_place_id = serializer.validated_data["external_place_id"]
+        provider = get_restaurant_provider(external_source)
+
+        if provider is None:
+            return Response(
+                {"external_source": "Unsupported restaurant provider."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        provider_restaurant = provider.get(external_place_id)
+
+        if provider_restaurant is None:
+            return Response(
+                {"external_place_id": "Restaurant was not found by this provider."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        restaurant, created = Restaurant.objects.update_or_create(
+            external_source=external_source,
+            external_place_id=external_place_id,
+            defaults=provider_restaurant.to_restaurant_defaults(),
+        )
+        response_status = status.HTTP_201_CREATED if created else status.HTTP_200_OK
+        response_serializer = RestaurantSerializer(
+            restaurant,
+            context={"request": request},
+        )
+        return Response(response_serializer.data, status=response_status)
 
 
 class UserRestaurantViewSet(viewsets.ModelViewSet):
@@ -161,6 +250,10 @@ class UserRestaurantViewSet(viewsets.ModelViewSet):
 
 class UserRestaurantPhotoViewSet(viewsets.ModelViewSet):
     serializer_class = UserRestaurantPhotoSerializer
+    pagination_class = RestaurantPagination
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ["created_at"]
+    ordering = ["-created_at"]
     http_method_names = ["get", "post", "delete", "head", "options"]
 
     def get_permissions(self):
@@ -177,12 +270,20 @@ class UserRestaurantPhotoViewSet(viewsets.ModelViewSet):
 
         restaurant_id = query_params.get("restaurant_id")
         user_restaurant_id = query_params.get("user_restaurant_id")
+        user_id = query_params.get("user_id")
+        username = query_params.get("username")
 
         if restaurant_id:
             queryset = queryset.filter(user_restaurant__restaurant_id=restaurant_id)
 
         if user_restaurant_id:
             queryset = queryset.filter(user_restaurant_id=user_restaurant_id)
+
+        if user_id:
+            queryset = queryset.filter(user_restaurant__user_id=user_id)
+
+        if username:
+            queryset = queryset.filter(user_restaurant__user__username__iexact=username)
 
         return queryset
 
@@ -271,7 +372,7 @@ class FeedViewSet(viewsets.ReadOnlyModelViewSet):
             follower=self.request.user,
         ).values("following_id")
 
-        return (
+        queryset = (
             UserRestaurant.objects.filter(
                 user_id__in=followed_user_ids,
                 visited=True,
@@ -280,3 +381,44 @@ class FeedViewSet(viewsets.ReadOnlyModelViewSet):
             .select_related("restaurant", "user")
             .order_by("-updated_at")
         )
+        query_params = self.request.query_params
+
+        search = query_params.get("search") or query_params.get("q")
+        location = query_params.get("location")
+        cuisine = query_params.get("cuisine")
+        city = query_params.get("city")
+        price_level = query_params.get("price_level")
+        min_rating = query_params.get("min_rating")
+
+        if search:
+            queryset = queryset.filter(
+                Q(restaurant__name__icontains=search)
+                | Q(restaurant__cuisine__icontains=search)
+                | Q(restaurant__address__icontains=search)
+                | Q(notes__icontains=search)
+            )
+
+        if location:
+            queryset = queryset.filter(
+                Q(restaurant__address__icontains=location)
+                | Q(restaurant__city__icontains=location)
+                | Q(restaurant__state__icontains=location)
+                | Q(restaurant__country__icontains=location)
+            )
+
+        if cuisine:
+            queryset = queryset.filter(restaurant__cuisine__icontains=cuisine)
+
+        if city:
+            queryset = queryset.filter(restaurant__city__iexact=city)
+
+        if price_level:
+            queryset = queryset.filter(restaurant__price_level=price_level)
+
+        if min_rating:
+            try:
+                queryset = queryset.filter(rating__gte=Decimal(min_rating))
+            except InvalidOperation:
+                queryset = queryset.none()
+
+        return queryset
