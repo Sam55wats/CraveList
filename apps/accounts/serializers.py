@@ -15,6 +15,9 @@ class UserSerializer(serializers.ModelSerializer):
 class PublicUserSerializer(serializers.ModelSerializer):
     followers_count = serializers.SerializerMethodField()
     following_count = serializers.SerializerMethodField()
+    visited_count = serializers.SerializerMethodField()
+    bookmarked_count = serializers.SerializerMethodField()
+    average_rating = serializers.SerializerMethodField()
     is_following = serializers.SerializerMethodField()
     follow_id = serializers.SerializerMethodField()
 
@@ -25,6 +28,9 @@ class PublicUserSerializer(serializers.ModelSerializer):
             "username",
             "followers_count",
             "following_count",
+            "visited_count",
+            "bookmarked_count",
+            "average_rating",
             "is_following",
             "follow_id",
         )
@@ -40,6 +46,32 @@ class PublicUserSerializer(serializers.ModelSerializer):
             return user.following_count
 
         return user.following_relationships.count()
+
+    def get_visited_count(self, user):
+        if hasattr(user, "visited_count"):
+            return user.visited_count
+
+        return user.restaurant_entries.filter(visited=True).count()
+
+    def get_bookmarked_count(self, user):
+        if hasattr(user, "bookmarked_count"):
+            return user.bookmarked_count
+
+        return user.restaurant_entries.filter(bookmarked=True).count()
+
+    def get_average_rating(self, user):
+        average_rating = getattr(user, "average_rating", None)
+
+        if average_rating is None:
+            rated_entries = user.restaurant_entries.filter(rating__isnull=False)
+            ratings = [entry.rating for entry in rated_entries]
+
+            if not ratings:
+                return None
+
+            average_rating = sum(ratings) / len(ratings)
+
+        return f"{average_rating:.1f}"
 
     def get_is_following(self, user):
         is_following = getattr(user, "is_following", None)
