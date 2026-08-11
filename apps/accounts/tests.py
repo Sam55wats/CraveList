@@ -144,6 +144,9 @@ class PublicUserAPITests(APITestCase):
         self.assertNotIn("email", response.data["results"][0])
         self.assertIn("followers_count", response.data["results"][0])
         self.assertIn("following_count", response.data["results"][0])
+        self.assertIn("visited_count", response.data["results"][0])
+        self.assertIn("bookmarked_count", response.data["results"][0])
+        self.assertIn("average_rating", response.data["results"][0])
 
     def test_public_user_detail_includes_follow_status_for_logged_in_user(self):
         user = User.objects.create_user(username="samuel", password="password")
@@ -158,6 +161,31 @@ class PublicUserAPITests(APITestCase):
         self.assertTrue(response.data["is_following"])
         self.assertEqual(response.data["follow_id"], follow.id)
         self.assertEqual(response.data["followers_count"], 1)
+
+    def test_public_user_detail_includes_restaurant_stats(self):
+        friend = User.objects.create_user(username="friend", password="password")
+        taco_bamba = Restaurant.objects.create(name="Taco Bamba")
+        sushi_spot = Restaurant.objects.create(name="Sushi Spot")
+        UserRestaurant.objects.create(
+            user=friend,
+            restaurant=taco_bamba,
+            bookmarked=False,
+            visited=True,
+            rating="9.0",
+        )
+        UserRestaurant.objects.create(
+            user=friend,
+            restaurant=sushi_spot,
+            bookmarked=True,
+            visited=False,
+        )
+
+        response = self.client.get(f"/api/users/{friend.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["visited_count"], 1)
+        self.assertEqual(response.data["bookmarked_count"], 1)
+        self.assertEqual(response.data["average_rating"], "9.0")
 
     def test_public_user_restaurants_only_shows_visited_rated_entries(self):
         friend = User.objects.create_user(username="friend", password="password")
