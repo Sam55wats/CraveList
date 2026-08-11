@@ -65,6 +65,15 @@ class RestaurantAPITests(APITestCase):
         self.assertFalse(serializer.is_valid())
         self.assertIn("price_level", serializer.errors)
 
+    def test_api_docs_endpoint_lists_available_backend_sections(self):
+        response = self.client.get("/api/docs/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["name"], "CraveList API")
+        self.assertIn("restaurants", response.data["endpoints"])
+        self.assertIn("personal_restaurants", response.data["endpoints"])
+        self.assertIn("social", response.data["endpoints"])
+
     def test_can_search_restaurants_by_name(self):
         Restaurant.objects.create(name="Taco Bamba", cuisine="Mexican")
         Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
@@ -670,6 +679,45 @@ class UserRestaurantAPITests(APITestCase):
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["restaurant"]["name"], "Taco Bamba")
 
+    def test_can_filter_user_restaurants_by_min_rating(self):
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            visited=True,
+            rating="9.2",
+        )
+        sushi = Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=sushi,
+            visited=True,
+            rating="7.8",
+        )
+
+        response = self.client.get("/api/my-restaurants/?min_rating=9")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["restaurant"]["name"], "Taco Bamba")
+
+    def test_user_restaurant_response_includes_photos(self):
+        entry = UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=self.restaurant,
+            visited=True,
+            rating="9.2",
+        )
+        UserRestaurantPhoto.objects.create(
+            user_restaurant=entry,
+            image="restaurant_photos/taco.gif",
+            description="Taco photo.",
+        )
+
+        response = self.client.get(f"/api/my-restaurants/{entry.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["photos"][0]["description"], "Taco photo.")
+
     def test_user_restaurants_are_paginated(self):
         created_restaurants = [
             self.restaurant,
@@ -796,6 +844,37 @@ class RecommendationAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.data["count"], 1)
         self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
+
+    def test_recommendations_prefer_known_lower_price_levels(self):
+        expensive = Restaurant.objects.create(name="Expensive Place", price_level=4)
+        affordable = Restaurant.objects.create(name="Affordable Place", price_level=1)
+        unknown = Restaurant.objects.create(name="Unknown Price")
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=expensive,
+            bookmarked=True,
+            visited=False,
+        )
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=affordable,
+            bookmarked=True,
+            visited=False,
+        )
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=unknown,
+            bookmarked=True,
+            visited=False,
+        )
+
+        response = self.client.get("/api/recommendations/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [restaurant["name"] for restaurant in response.data["results"]],
+            ["Affordable Place", "Expensive Place", "Unknown Price"],
+        )
 
     def test_recommendations_require_authentication(self):
         self.client.force_authenticate(user=None)
@@ -1299,6 +1378,112 @@ class ExternalRestaurantAPITests(APITestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(Restaurant.objects.count(), 1)
         self.assertEqual(response.data["name"], "Taco Bamba")
+
+    def test_can_import_and_save_seed_external_restaurant(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            "/api/external-restaurants/import-and-save/",
+            {
+                "external_source": "seed",
+                "external_place_id": "seed-college-park-taco-bamba",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["name"], "Taco Bamba")
+        self.assertTrue(response.data["my_entry"]["bookmarked"])
+        self.assertFalse(response.data["my_entry"]["visited"])
+        self.assertEqual(UserRestaurant.objects.count(), 1)
+
+    def test_import_and_save_can_create_visited_entry_with_rating(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            "/api/external-restaurants/import-and-save/",
+            {
+                "external_source": "seed",
+                "external_place_id": "seed-college-park-taco-bamba",
+                "visited": True,
+                "rating": "9.3",
+                "notes": "Loved it.",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertTrue(response.data["my_entry"]["visited"])
+        self.assertFalse(response.data["my_entry"]["bookmarked"])
+        self.assertEqual(response.data["my_entry"]["rating"], "9.3")
+
+    def test_import_and_save_reuses_existing_user_entry(self):
+        self.client.force_authenticate(user=self.user)
+        restaurant = Restaurant.objects.create(
+            name="Old Taco Name",
+            external_source="seed",
+            external_place_id="seed-college-park-taco-bamba",
+        )
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=restaurant,
+            bookmarked=False,
+        )
+
+        response = self.client.post(
+            "/api/external-restaurants/import-and-save/",
+            {
+                "external_source": "seed",
+                "external_place_id": "seed-college-park-taco-bamba",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Restaurant.objects.count(), 1)
+        self.assertEqual(UserRestaurant.objects.count(), 1)
+        self.assertTrue(response.data["my_entry"]["bookmarked"])
+
+    def test_import_and_save_does_not_reset_existing_visited_entry(self):
+        self.client.force_authenticate(user=self.user)
+        restaurant = Restaurant.objects.create(
+            name="Old Taco Name",
+            external_source="seed",
+            external_place_id="seed-college-park-taco-bamba",
+        )
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=restaurant,
+            bookmarked=False,
+            visited=True,
+            rating="9.1",
+        )
+
+        response = self.client.post(
+            "/api/external-restaurants/import-and-save/",
+            {
+                "external_source": "seed",
+                "external_place_id": "seed-college-park-taco-bamba",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data["my_entry"]["visited"])
+        self.assertFalse(response.data["my_entry"]["bookmarked"])
+        self.assertEqual(response.data["my_entry"]["rating"], "9.1")
+
+    def test_import_and_save_requires_authentication(self):
+        response = self.client.post(
+            "/api/external-restaurants/import-and-save/",
+            {
+                "external_source": "seed",
+                "external_place_id": "seed-college-park-taco-bamba",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 403)
 
     def test_import_requires_authentication(self):
         response = self.client.post(
