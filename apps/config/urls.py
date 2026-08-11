@@ -2,11 +2,12 @@ from django.contrib import admin
 from django.conf import settings
 from django.conf.urls.static import static
 from django.urls import include, path
-from restaurants.views import health_check
+from restaurants.views import api_docs, health_check
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/health/', health_check, name='health-check'),
+    path("api/docs/", api_docs, name="api-docs"),
     path("api/auth/", include("accounts.urls")),
     path("api/", include("accounts.user_urls")),
     path("api/", include("restaurants.urls")),
