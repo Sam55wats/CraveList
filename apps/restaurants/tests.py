@@ -724,6 +724,87 @@ class UserRestaurantAPITests(APITestCase):
         self.assertEqual(response.status_code, 403)
 
 
+class RecommendationAPITests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="samuel", password="password")
+        self.client.force_authenticate(user=self.user)
+
+    def test_recommendations_show_bookmarked_unvisited_restaurants(self):
+        taco_bamba = Restaurant.objects.create(
+            name="Taco Bamba",
+            cuisine="Mexican",
+            city="College Park",
+            price_level=2,
+        )
+        visited_sushi = Restaurant.objects.create(name="Sushi Spot", cuisine="Japanese")
+        unsaved_pizza = Restaurant.objects.create(name="Pizza Place", cuisine="Italian")
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=taco_bamba,
+            bookmarked=True,
+            visited=False,
+        )
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=visited_sushi,
+            bookmarked=False,
+            visited=True,
+            rating="8.1",
+        )
+
+        response = self.client.get("/api/recommendations/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
+        self.assertTrue(response.data["results"][0]["my_entry"]["bookmarked"])
+        self.assertFalse(
+            any(
+                result["name"] == unsaved_pizza.name
+                for result in response.data["results"]
+            )
+        )
+
+    def test_recommendations_support_filters(self):
+        taco_bamba = Restaurant.objects.create(
+            name="Taco Bamba",
+            cuisine="Mexican",
+            city="College Park",
+            price_level=2,
+        )
+        ramen_shop = Restaurant.objects.create(
+            name="Ramen Shop",
+            cuisine="Japanese",
+            city="College Park",
+            price_level=2,
+        )
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=taco_bamba,
+            bookmarked=True,
+            visited=False,
+        )
+        UserRestaurant.objects.create(
+            user=self.user,
+            restaurant=ramen_shop,
+            bookmarked=True,
+            visited=False,
+        )
+
+        response = self.client.get("/api/recommendations/?cuisine=mex")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["name"], "Taco Bamba")
+
+    def test_recommendations_require_authentication(self):
+        self.client.force_authenticate(user=None)
+
+        response = self.client.get("/api/recommendations/")
+
+        self.assertEqual(response.status_code, 403)
+
+
 @override_settings(MEDIA_ROOT=TEST_MEDIA_ROOT)
 class UserRestaurantPhotoAPITests(APITestCase):
     def setUp(self):
@@ -770,6 +851,44 @@ class UserRestaurantPhotoAPITests(APITestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("description", response.data)
+
+    @override_settings(MAX_RESTAURANT_PHOTO_BYTES=10)
+    def test_photo_must_be_under_size_limit(self):
+        response = self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": self.entry.id,
+                "image": get_test_image(),
+                "description": "Too big for this test.",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("image", response.data)
+
+    def test_photo_must_use_allowed_content_type(self):
+        image = SimpleUploadedFile(
+            "test.bmp",
+            (
+                b"GIF87a\x01\x00\x01\x00\x80\x01\x00\x00\x00\x00\xff\xff\xff,"
+                b"\x00\x00\x00\x00\x01\x00\x01\x00\x00\x02\x02D\x01\x00;"
+            ),
+            content_type="image/bmp",
+        )
+
+        response = self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": self.entry.id,
+                "image": image,
+                "description": "Unsupported type.",
+            },
+            format="multipart",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("image", response.data)
 
     def test_photo_requires_visited_rated_restaurant_entry(self):
         unvisited_entry = UserRestaurant.objects.create(
@@ -827,8 +946,11 @@ class UserRestaurantPhotoAPITests(APITestCase):
 
         self.assertEqual(upload_response.status_code, 201)
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["description"], "Public taco photo.")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(
+            response.data["results"][0]["description"],
+            "Public taco photo.",
+        )
 
     def test_can_filter_photos_by_restaurant(self):
         self.client.post(
@@ -862,8 +984,57 @@ class UserRestaurantPhotoAPITests(APITestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(len(response.data), 1)
-        self.assertEqual(response.data[0]["description"], "Taco photo.")
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(response.data["results"][0]["description"], "Taco photo.")
+
+    def test_can_filter_photos_by_username(self):
+        self.client.post(
+            "/api/my-restaurant-photos/",
+            {
+                "user_restaurant_id": self.entry.id,
+                "image": get_test_image(),
+                "description": "Samuel taco photo.",
+            },
+            format="multipart",
+        )
+        other_entry = UserRestaurant.objects.create(
+            user=self.other_user,
+            restaurant=Restaurant.objects.create(name="Other Place"),
+            visited=True,
+            rating="7.8",
+        )
+        UserRestaurantPhoto.objects.create(
+            user_restaurant=other_entry,
+            image=get_test_image("other.gif"),
+            description="Other user photo.",
+        )
+
+        response = self.client.get("/api/my-restaurant-photos/?username=samuel")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(
+            response.data["results"][0]["description"],
+            "Samuel taco photo.",
+        )
+
+    def test_photos_are_paginated(self):
+        photos = [
+            UserRestaurantPhoto(
+                user_restaurant=self.entry,
+                image=get_test_image(f"photo-{number}.gif"),
+                description=f"Photo {number}",
+            )
+            for number in range(25)
+        ]
+        UserRestaurantPhoto.objects.bulk_create(photos)
+
+        response = self.client.get("/api/my-restaurant-photos/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 25)
+        self.assertEqual(len(response.data["results"]), 20)
+        self.assertIsNotNone(response.data["next"])
 
     def test_user_can_delete_their_own_photo(self):
         upload_response = self.client.post(
@@ -1033,5 +1204,110 @@ class FeedAPITests(APITestCase):
         self.client.force_authenticate(user=None)
 
         response = self.client.get("/api/feed/")
+
+        self.assertEqual(response.status_code, 403)
+
+    def test_feed_supports_cuisine_city_and_min_rating_filters(self):
+        Follow.objects.create(follower=self.user, following=self.friend)
+        tacos = Restaurant.objects.create(
+            name="Friend Tacos",
+            cuisine="Mexican",
+            city="College Park",
+            price_level=2,
+        )
+        sushi = Restaurant.objects.create(
+            name="Friend Sushi",
+            cuisine="Japanese",
+            city="College Park",
+            price_level=3,
+        )
+        UserRestaurant.objects.create(
+            user=self.friend,
+            restaurant=tacos,
+            visited=True,
+            rating="9.1",
+        )
+        UserRestaurant.objects.create(
+            user=self.friend,
+            restaurant=sushi,
+            visited=True,
+            rating="7.9",
+        )
+
+        response = self.client.get(
+            "/api/feed/?cuisine=mex&city=college%20park&min_rating=9"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["count"], 1)
+        self.assertEqual(
+            response.data["results"][0]["restaurant"]["name"],
+            "Friend Tacos",
+        )
+
+
+class ExternalRestaurantAPITests(APITestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username="samuel", password="password")
+
+    def test_can_search_seed_external_restaurants(self):
+        response = self.client.get("/api/external-restaurants/search/?q=taco")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(len(response.data) >= 1)
+        self.assertEqual(response.data[0]["external_source"], "seed")
+        self.assertIn("external_place_id", response.data[0])
+
+    def test_can_import_seed_external_restaurant(self):
+        self.client.force_authenticate(user=self.user)
+
+        response = self.client.post(
+            "/api/external-restaurants/import/",
+            {
+                "external_source": "seed",
+                "external_place_id": "seed-college-park-taco-bamba",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["name"], "Taco Bamba")
+        self.assertTrue(
+            Restaurant.objects.filter(
+                external_source="seed",
+                external_place_id="seed-college-park-taco-bamba",
+            ).exists()
+        )
+
+    def test_importing_same_external_restaurant_updates_existing_restaurant(self):
+        self.client.force_authenticate(user=self.user)
+        Restaurant.objects.create(
+            name="Old Taco Name",
+            external_source="seed",
+            external_place_id="seed-college-park-taco-bamba",
+        )
+
+        response = self.client.post(
+            "/api/external-restaurants/import/",
+            {
+                "external_source": "seed",
+                "external_place_id": "seed-college-park-taco-bamba",
+            },
+            format="json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(Restaurant.objects.count(), 1)
+        self.assertEqual(response.data["name"], "Taco Bamba")
+
+    def test_import_requires_authentication(self):
+        response = self.client.post(
+            "/api/external-restaurants/import/",
+            {
+                "external_source": "seed",
+                "external_place_id": "seed-college-park-taco-bamba",
+            },
+            format="json",
+        )
 
         self.assertEqual(response.status_code, 403)
