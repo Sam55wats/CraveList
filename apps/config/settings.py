@@ -140,3 +140,12 @@ STATIC_URL = 'static/'
 
 MEDIA_URL = "media/"
 MEDIA_ROOT = BASE_DIR / "media"
+
+MAX_RESTAURANT_PHOTO_BYTES = 5 * 1024 * 1024
+ALLOWED_RESTAURANT_PHOTO_CONTENT_TYPES = [
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "image/gif",
+]
+ALLOWED_RESTAURANT_PHOTO_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".gif"]
